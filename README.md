@@ -1,3 +1,8 @@
+# ↪️ Outdated Repository
+
+This repository is outdated. <br>
+More up-to-date code examples are available here:  
+https://github.com/hailo-ai/hailo-apps 
 
 ![Banner](doc/images/hailo_rpi_examples_banner.png)
 
