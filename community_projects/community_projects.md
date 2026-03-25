@@ -13,9 +13,20 @@ For more information see [WLED display project.](wled_display/README.md)
 
 ## Fruit Ninja
 
-A real-time Fruit Ninja game that uses hand tracking through pose estimation to slice fruits. The game integrates with Hailo's pose estimation pipeline and runs a separate pygame process for the game logic.
+A real-time Fruit Ninja game that uses hand tracking through pose estimation to slice fruits. Two variants are available:
+
+- **Multi-process version** (`fruit_ninja_game.py`): Game logic runs in a separate pygame process with fruit positions injected back into the video stream as Hailo detections.
+- **Standalone version** (`Fruit_Ninja_Hailo.py`): Self-contained single-file version with automatic mouse fallback when no Hailo hardware is present. Launch with `./play_fruit_ninja.sh`.
 
 For more information see [Fruit Ninja project.](fruit_ninja/README.md)
+
+## Space Invaders
+
+A 3D Space Invaders game controlled by body pose estimation. Move your head and body left/right to steer your ship. Supports up to 2 simultaneous players, each tracked independently by the Hailo pose estimation pipeline. Falls back to keyboard control when no Hailo hardware is detected.
+
+Launch with `./play_space_invaders.sh`.
+
+For more information see [Space Invaders project.](space_invaders/README.md)
 
 ## TAILO
 A smart device that keeps pets happy, active, and monitored through tracking and interactive play.
