@@ -176,10 +176,10 @@ COMBO_BONUS      = 10     # extra points per combo step beyond 1
 
 ROUND_SECONDS  = 60     # length of a round
 
-# Time bonus: score TIME_BONUS_POINTS within TIME_BONUS_WINDOW seconds → +TIME_BONUS_ADD seconds
-TIME_BONUS_POINTS = 300
-TIME_BONUS_WINDOW = 15.0
-TIME_BONUS_ADD    = 8
+# Time-bonus node: spawns occasionally, falls fast, awards +TIME_NODE_ADD seconds on hit
+TIME_NODE_CHANCE  = 0.012   # probability per spawn tick of spawning a time node
+TIME_NODE_SPEED   = 18.0    # px / frame (much faster than normal nodes)
+TIME_NODE_ADD     = 10      # seconds added on hit
 
 HIT_LINE_FRAC    = 0.80   # hit line sits at 80 % of screen height
 
@@ -419,15 +419,16 @@ def start_bgm():
 # =============================================================================
 
 class Node:
-    def __init__(self, col, limb_idx, speed):
-        self.col      = col
-        self.limb_idx = limb_idx
-        self.color    = LIMB_COLORS[limb_idx]
-        self.speed    = speed
-        self.y        = float(-NODE_H)
-        self.state    = 'falling'   # 'falling' | 'hit' | 'missed'
-        self.label    = LIMB_SHORTS[limb_idx]
-        self.alpha    = 255
+    def __init__(self, col, limb_idx, speed, is_time_node=False):
+        self.col          = col
+        self.limb_idx     = limb_idx
+        self.color        = (80, 255, 200) if is_time_node else LIMB_COLORS[limb_idx]
+        self.speed        = speed
+        self.y            = float(-NODE_H)
+        self.state        = 'falling'   # 'falling' | 'hit' | 'missed'
+        self.label        = f"+{TIME_NODE_ADD}s" if is_time_node else LIMB_SHORTS[limb_idx]
+        self.alpha        = 255
+        self.is_time_node = is_time_node
 
     def update(self):
         if self.state == 'falling':
@@ -462,13 +463,15 @@ def draw_heart(surf, cx, cy, size, color):
 def draw_node(surf, nd, cx, node_font):
     x = cx + (surf.get_width() // NUM_COLUMNS - NODE_W) // 2
 
-    # We draw onto a temporary surface so we can set alpha per-node
     ns = pygame.Surface((NODE_W, NODE_H), pygame.SRCALPHA)
     body_color = (*nd.color, nd.alpha)
     pygame.draw.rect(ns, body_color, (0, 0, NODE_W, NODE_H), border_radius=10)
     hi = tuple(min(255, c + 70) for c in nd.color)
     pygame.draw.rect(ns, (*hi, nd.alpha), (5, 4, NODE_W - 10, 9), border_radius=4)
-    lbl = node_font.render(nd.label, True, (255, 255, 255))
+    if nd.is_time_node:
+        # Bright white flashing border
+        pygame.draw.rect(ns, (255, 255, 255, nd.alpha), (0, 0, NODE_W, NODE_H), 3, border_radius=10)
+    lbl = node_font.render(nd.label, True, (0, 0, 0) if nd.is_time_node else (255, 255, 255))
     lbl.set_alpha(nd.alpha)
     ns.blit(lbl, lbl.get_rect(center=(NODE_W // 2, NODE_H // 2)))
     surf.blit(ns, (x, int(nd.y)))
@@ -631,8 +634,6 @@ def main():
     combo             = 0
     time_left         = float(ROUND_SECONDS)
     time_level        = 0
-    bonus_score_at    = 0     # score when current bonus window started
-    bonus_elapsed_at  = 0.0   # elapsed seconds when current bonus window started
     nodes             = []
     popups            = []   # [text, color, cx, y, alpha, vy]
     spawn_tmr         = 0
@@ -641,11 +642,8 @@ def main():
     _pip_surf         = None
 
     def reset():
-        nonlocal score, combo, time_left, time_level, bonus_score_at, bonus_elapsed_at, \
-                 nodes, popups, spawn_tmr, level, miss_flash
+        nonlocal score, combo, time_left, time_level, nodes, popups, spawn_tmr, level, miss_flash
         score = combo = spawn_tmr = miss_flash = time_level = 0
-        bonus_score_at = 0
-        bonus_elapsed_at = 0.0
         time_left = float(ROUND_SECONDS)
         level = 1
         nodes.clear()
@@ -724,17 +722,6 @@ def main():
                     high_score = score
                     save_high_score(high_score)
 
-            # Time bonus: score TIME_BONUS_POINTS within TIME_BONUS_WINDOW seconds → +TIME_BONUS_ADD s
-            elapsed          = ROUND_SECONDS - time_left
-            points_in_window = score - bonus_score_at
-            time_in_window   = elapsed - bonus_elapsed_at
-            if points_in_window >= TIME_BONUS_POINTS:
-                if time_in_window <= TIME_BONUS_WINDOW:
-                    time_left += TIME_BONUS_ADD
-                    add_popup(f"+{TIME_BONUS_ADD}s!", (80, 255, 180), random.randint(0, NUM_COLUMNS - 1))
-                bonus_score_at   = score
-                bonus_elapsed_at = elapsed
-
             # Spawn nodes
             elapsed    = ROUND_SECONDS - time_left
             time_level = int(elapsed / TIME_LEVEL_INTERVAL)
@@ -742,12 +729,15 @@ def main():
             interval   = max(SPAWN_MIN, SPAWN_INTERVAL - (level - 1) * 5)
             if spawn_tmr >= interval:
                 spawn_tmr = 0
-                col   = random.randint(0, NUM_COLUMNS - 1)
-                limb  = random.randint(0, len(LIMBS) - 1)
-                speed = (NODE_BASE_SPEED
-                         + NODE_SPEED_INCR * (level - 1)
-                         + TIME_SPEED_INCR * time_level)
-                nodes.append(Node(col, limb, speed))
+                col  = random.randint(0, NUM_COLUMNS - 1)
+                limb = random.randint(0, len(LIMBS) - 1)
+                if random.random() < TIME_NODE_CHANCE:
+                    nodes.append(Node(col, limb, TIME_NODE_SPEED, is_time_node=True))
+                else:
+                    speed = (NODE_BASE_SPEED
+                             + NODE_SPEED_INCR * (level - 1)
+                             + TIME_SPEED_INCR * time_level)
+                    nodes.append(Node(col, limb, speed))
 
             # Update nodes
             for nd in nodes:
@@ -762,19 +752,29 @@ def main():
 
                 if dist <= PERFECT_WINDOW and in_col:
                     nd.state = 'hit'
-                    pts      = POINTS_PERFECT + combo * COMBO_BONUS
-                    score   += pts
-                    combo   += 1
-                    sounds['perfect'].play()
-                    add_popup('PERFECT!', (255, 255, 80), nd.col)
+                    if nd.is_time_node:
+                        time_left += TIME_NODE_ADD
+                        sounds['perfect'].play()
+                        add_popup(f'+{TIME_NODE_ADD}s!', (80, 255, 200), nd.col)
+                    else:
+                        pts    = POINTS_PERFECT + combo * COMBO_BONUS
+                        score += pts
+                        combo += 1
+                        sounds['perfect'].play()
+                        add_popup('PERFECT!', (255, 255, 80), nd.col)
 
                 elif dist <= GOOD_WINDOW and in_col:
                     nd.state = 'hit'
-                    pts      = POINTS_GOOD + combo * COMBO_BONUS
-                    score   += pts
-                    combo   += 1
-                    sounds['good'].play()
-                    add_popup('GOOD', (100, 230, 100), nd.col)
+                    if nd.is_time_node:
+                        time_left += TIME_NODE_ADD
+                        sounds['good'].play()
+                        add_popup(f'+{TIME_NODE_ADD}s!', (80, 255, 200), nd.col)
+                    else:
+                        pts    = POINTS_GOOD + combo * COMBO_BONUS
+                        score += pts
+                        combo += 1
+                        sounds['good'].play()
+                        add_popup('GOOD', (100, 230, 100), nd.col)
 
                 elif nd.center_y > HIT_LINE_Y + GOOD_WINDOW:
                     nd.state   = 'missed'
