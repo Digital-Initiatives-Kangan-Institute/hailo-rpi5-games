@@ -159,11 +159,7 @@ POINTS_PERFECT   = 100
 POINTS_GOOD      = 50
 COMBO_BONUS      = 10     # extra points per combo step beyond 1
 
-HEALTH_MAX             = 100.0
-HEALTH_DRAIN_PER_SEC   = 4.0    # passive drain per second while playing
-HEALTH_MISS_PENALTY    = 14.0   # health lost on a miss
-HEALTH_HIT_RESTORE     = 4.0    # health gained on GOOD
-HEALTH_PERFECT_RESTORE = 7.0    # health gained on PERFECT
+ROUND_SECONDS  = 60     # length of a round
 
 HIT_LINE_FRAC    = 0.80   # hit line sits at 80 % of screen height
 
@@ -603,22 +599,22 @@ def main():
     ]
 
     # ── Game state ───────────────────────────────────────────────────────────
-    game_state = GS_MENU
-    score      = 0
-    combo      = 0
-    health     = HEALTH_MAX
-    nodes      = []
-    popups     = []   # [text, color, cx, y, alpha, vy]
-    spawn_tmr  = 0
-    level      = 1
-    miss_flash = 0    # frames of red screen flash remaining
-    _pip_surf  = None
+    game_state   = GS_MENU
+    score        = 0
+    combo        = 0
+    time_left    = float(ROUND_SECONDS)
+    nodes        = []
+    popups       = []   # [text, color, cx, y, alpha, vy]
+    spawn_tmr    = 0
+    level        = 1
+    miss_flash   = 0    # frames of red screen flash remaining
+    _pip_surf    = None
 
     def reset():
-        nonlocal score, combo, health, nodes, popups, spawn_tmr, level, miss_flash
+        nonlocal score, combo, time_left, nodes, popups, spawn_tmr, level, miss_flash
         score = combo = spawn_tmr = miss_flash = 0
-        health = HEALTH_MAX
-        level  = 1
+        time_left = float(ROUND_SECONDS)
+        level = 1
         nodes.clear()
         popups.clear()
 
@@ -687,9 +683,9 @@ def main():
         if game_state == GS_PLAYING:
             level = 1 + score // LEVEL_SCORE_STEP
 
-            # Passive health drain
-            health = max(0.0, health - HEALTH_DRAIN_PER_SEC / FPS)
-            if health <= 0:
+            # Countdown timer
+            time_left = max(0.0, time_left - 1.0 / FPS)
+            if time_left <= 0:
                 game_state = GS_GAME_OVER
                 if score > high_score:
                     high_score = score
@@ -721,7 +717,6 @@ def main():
                     pts      = POINTS_PERFECT + combo * COMBO_BONUS
                     score   += pts
                     combo   += 1
-                    health   = min(HEALTH_MAX, health + HEALTH_PERFECT_RESTORE)
                     sounds['perfect'].play()
                     add_popup('PERFECT!', (255, 255, 80), nd.col)
 
@@ -730,22 +725,15 @@ def main():
                     pts      = POINTS_GOOD + combo * COMBO_BONUS
                     score   += pts
                     combo   += 1
-                    health   = min(HEALTH_MAX, health + HEALTH_HIT_RESTORE)
                     sounds['good'].play()
                     add_popup('GOOD', (100, 230, 100), nd.col)
 
                 elif nd.center_y > HIT_LINE_Y + GOOD_WINDOW:
                     nd.state   = 'missed'
                     combo      = 0
-                    health     = max(0.0, health - HEALTH_MISS_PENALTY)
-                    miss_flash = 22
+                    miss_flash = 12
                     sounds['miss'].play()
                     add_popup('MISS', (230, 70, 70), nd.col)
-                    if health <= 0:
-                        game_state = GS_GAME_OVER
-                        if score > high_score:
-                            high_score = score
-                            save_high_score(high_score)
 
             # Remove dead nodes (faded out or off-screen)
             nodes = [nd for nd in nodes
@@ -840,31 +828,18 @@ def main():
             screen.blit(hud_font.render(f"Combo ×{combo}", True, (255, 215, 50)), (12, 90))
             screen.blit(small_font.render(f"Level {level}", True, GREY), (12, 132))
 
-            # Health bar
-            bar_w  = 220
-            bar_h  = 18
-            bar_x  = WINDOW_WIDTH - bar_w - 14
-            bar_y  = 14
-            frac   = health / HEALTH_MAX
-            filled = int(bar_w * frac)
-            # Background
-            pygame.draw.rect(screen, (40, 20, 20), (bar_x, bar_y, bar_w, bar_h), border_radius=5)
-            # Fill colour: green → yellow → red
-            if frac > 0.5:
-                r = int(255 * (1 - frac) * 2)
-                g = 220
-            else:
-                r = 220
-                g = int(220 * frac * 2)
-            if filled > 0:
-                pygame.draw.rect(screen, (r, g, 30), (bar_x, bar_y, filled, bar_h), border_radius=5)
-            pygame.draw.rect(screen, GREY, (bar_x, bar_y, bar_w, bar_h), 2, border_radius=5)
-            hp_lbl = tiny_font.render("HEALTH", True, GREY)
-            screen.blit(hp_lbl, hp_lbl.get_rect(centerx=bar_x + bar_w // 2, centery=bar_y + bar_h + 10))
+            # Countdown timer
+            secs    = int(time_left)
+            t_color = (255, 80, 80) if time_left < 10 else WHITE
+            t_surf  = big_font.render(f"{secs:02d}", True, t_color)
+            t_rect  = t_surf.get_rect(topright=(WINDOW_WIDTH - 14, 8))
+            screen.blit(t_surf, t_rect)
+            lbl = tiny_font.render("SEC", True, GREY)
+            screen.blit(lbl, lbl.get_rect(topright=(t_rect.left - 4, t_rect.centery - 6)))
 
-        # Limb colour legend (top-right)
+        # Limb colour legend (top-right, below timer)
         lx = WINDOW_WIDTH - 180
-        ly = 52
+        ly = 80
         for li, (name, short, _, color) in enumerate(LIMBS):
             pygame.draw.circle(screen, color, (lx, ly + 10), 10)
             pygame.draw.circle(screen, WHITE,  (lx, ly + 10), 10, 1)
