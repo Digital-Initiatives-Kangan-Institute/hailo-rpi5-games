@@ -163,6 +163,20 @@ LIVES_START      = 3
 
 HIT_LINE_FRAC    = 0.80   # hit line sits at 80 % of screen height
 
+# COCO-17 skeleton connections for PiP overlay
+COCO_SKELETON = [
+    (0, 1), (0, 2), (1, 3), (2, 4),
+    (5, 7), (7, 9), (6, 8), (8, 10),
+    (5, 6), (5, 11), (6, 12), (11, 12),
+    (11, 13), (13, 15), (12, 14), (14, 16),
+]
+# Keypoint index → limb colour for highlighted joints
+_TRACKED_KP_COLOR = {limb[2]: limb[3] for limb in
+                     [("Left Wrist",  "LW", LEFT_WRIST,   (220,  60,  60)),
+                      ("Right Wrist", "RW", RIGHT_WRIST,  ( 60, 100, 230)),
+                      ("Left Knee",   "LK", LEFT_KNEE,    ( 50, 200,  70)),
+                      ("Right Knee",  "RK", RIGHT_KNEE,   (230, 200,   0))]}
+
 # Picture-in-picture camera overlay
 PIP_W      = 280
 PIP_H      = 160
@@ -219,21 +233,31 @@ class DDRUserData(app_callback_class):
 
     def __init__(self):
         super().__init__()
-        self._lock   = threading.Lock()
-        self._limb_x = [None] * len(LIMBS)   # normalised 0-1, or None if undetected
-        self.pip_queue = queue.Queue(maxsize=1)
+        self._lock      = threading.Lock()
+        self._limb_x    = [None] * len(LIMBS)   # normalised 0-1, or None if undetected
+        self._keypoints = []   # [(x_norm, y_norm), ...] for all COCO-17 kps; empty if undetected
+        self.pip_queue  = queue.Queue(maxsize=1)
 
     def set_limb_x(self, limb_idx, x_norm):
         with self._lock:
             self._limb_x[limb_idx] = x_norm
 
+    def set_keypoints(self, kps):
+        with self._lock:
+            self._keypoints = kps
+
     def get_limb_x(self):
         with self._lock:
             return list(self._limb_x)
 
+    def get_keypoints(self):
+        with self._lock:
+            return list(self._keypoints)
+
     def clear_limbs(self):
         with self._lock:
-            self._limb_x = [None] * len(LIMBS)
+            self._limb_x    = [None] * len(LIMBS)
+            self._keypoints = []
 
 
 class DDRCallback(app_callback_class):
@@ -279,6 +303,16 @@ class DDRCallback(app_callback_class):
                 if MIRROR_X:
                     x_abs = 1.0 - x_abs
                 self.user_data.set_limb_x(li, x_abs)
+
+            # Store all 17 keypoints (normalised frame coords) for skeleton overlay
+            all_kps = []
+            for pt in pts:
+                x_abs = pt.x() * bbox.width() + bbox.xmin()
+                y_abs = pt.y() * bbox.height() + bbox.ymin()
+                if MIRROR_X:
+                    x_abs = 1.0 - x_abs
+                all_kps.append((x_abs, y_abs))
+            self.user_data.set_keypoints(all_kps)
 
             # Capture PiP frame
             try:
@@ -411,6 +445,57 @@ def draw_node(surf, nd, cx, node_font):
     lbl.set_alpha(nd.alpha)
     ns.blit(lbl, lbl.get_rect(center=(NODE_W // 2, NODE_H // 2)))
     surf.blit(ns, (x, int(nd.y)))
+
+
+# =============================================================================
+# SKELETON / TRACKING DRAWING
+# =============================================================================
+
+def draw_pip_skeleton(surf, keypoints):
+    """Overlay COCO-17 skeleton lines and keypoint dots on the PiP surface."""
+    if not keypoints:
+        return
+    w, h = surf.get_size()
+
+    def to_px(kp_idx):
+        x, y = keypoints[kp_idx]
+        return (int(x * w), int(y * h))
+
+    # Skeleton lines
+    for a, b in COCO_SKELETON:
+        if a < len(keypoints) and b < len(keypoints):
+            pygame.draw.line(surf, (200, 200, 200), to_px(a), to_px(b), 1)
+
+    # Keypoint dots — tracked limbs are larger and coloured
+    for idx, (x_norm, y_norm) in enumerate(keypoints):
+        px, py = int(x_norm * w), int(y_norm * h)
+        color  = _TRACKED_KP_COLOR.get(idx, (160, 160, 160))
+        r      = 5 if idx in _TRACKED_KP_COLOR else 2
+        pygame.draw.circle(surf, color, (px, py), r)
+        if idx in _TRACKED_KP_COLOR:
+            pygame.draw.circle(surf, (255, 255, 255), (px, py), r, 1)
+
+
+def draw_limb_guides(surf, raw_x, window_w, window_h, hit_line_y):
+    """Draw a semi-transparent vertical guide and hit-line arrow for each detected limb."""
+    guide_surf = pygame.Surface((window_w, window_h), pygame.SRCALPHA)
+    for li, x_norm in enumerate(raw_x):
+        if x_norm is None:
+            continue
+        lx    = int(x_norm * window_w)
+        color = LIMB_COLORS[li]
+
+        # Thin vertical guide spanning the full game area
+        pygame.draw.line(guide_surf, (*color, 55), (lx, 0), (lx, window_h), 2)
+
+        # Small downward-pointing arrow just above the hit line
+        tip  = (lx, hit_line_y - 6)
+        left = (lx - 7, hit_line_y - 20)
+        right= (lx + 7, hit_line_y - 20)
+        pygame.draw.polygon(guide_surf, (*color, 210), [tip, left, right])
+        pygame.draw.polygon(guide_surf, (255, 255, 255, 180), [tip, left, right], 1)
+
+    surf.blit(guide_surf, (0, 0))
 
 
 # =============================================================================
@@ -549,7 +634,8 @@ def main():
                     break
 
         # ── Pose data — resolve limb columns ─────────────────────────────────
-        raw_x = user_data.get_limb_x()
+        raw_x   = user_data.get_limb_x()
+        raw_kps = user_data.get_keypoints() if HAILO_AVAILABLE else []
         if HAILO_AVAILABLE:
             limb_cols = [x_to_col(x) for x in raw_x]
             # Keyboard overrides pose for any pressed keys
@@ -564,6 +650,7 @@ def main():
             frame = user_data.pip_queue.get_nowait()
             pip_raw = pygame.surfarray.make_surface(np.transpose(frame, (1, 0, 2)))
             _pip_surf = pygame.transform.scale(pip_raw, (PIP_W, PIP_H))
+            draw_pip_skeleton(_pip_surf, raw_kps)
         except queue.Empty:
             pass
 
@@ -649,6 +736,10 @@ def main():
         # Column dividers
         for ci in range(1, NUM_COLUMNS):
             pygame.draw.line(screen, (45, 42, 72), (col_xs[ci], 0), (col_xs[ci], WINDOW_HEIGHT), 2)
+
+        # Limb position guides (pose mode only)
+        if HAILO_AVAILABLE:
+            draw_limb_guides(screen, raw_x, WINDOW_WIDTH, WINDOW_HEIGHT, HIT_LINE_Y)
 
         # Miss flash overlay
         if miss_flash > 0:
