@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
 Dance Dance Revolution — Hailo Pose Estimation Edition
-Single-player DDR: move your wrists and knees into the correct column
+Single-player DDR: move your wrists and legs into the correct column
 when a matching-coloured node reaches the hit line.
 
 Limb → Colour:
   Left Wrist  → Red    (COCO-17 keypoint 9)
   Right Wrist → Blue   (COCO-17 keypoint 10)
-  Left Knee   → Green  (COCO-17 keypoint 13)
-  Right Knee  → Yellow (COCO-17 keypoint 14)
+  Left Leg    → Green  (avg of knee 13 + ankle 15)
+  Right Leg   → Yellow (avg of knee 14 + ankle 16)
 
 Nodes of any colour fall in any of the 4 columns at random.
 When a node reaches the hit line, place the matching limb in that column to score.
@@ -129,14 +129,20 @@ LEFT_WRIST  = 9
 RIGHT_WRIST = 10
 LEFT_KNEE   = 13
 RIGHT_KNEE  = 14
+LEFT_ANKLE  = 15
+RIGHT_ANKLE = 16
 
-# Limbs: (display_name, short_name, keypoint_index, rgb_colour)
+# Limbs: (display_name, short_name, primary_keypoint_index, rgb_colour)
+# Leg limbs average knee + ankle for a more stable x position.
 LIMBS = [
-    ("Left Wrist",  "LW", LEFT_WRIST,   (220,  60,  60)),   # Red
-    ("Right Wrist", "RW", RIGHT_WRIST,  ( 60, 100, 230)),   # Blue
-    ("Left Knee",   "LK", LEFT_KNEE,    ( 50, 200,  70)),   # Green
-    ("Right Knee",  "RK", RIGHT_KNEE,   (230, 200,   0)),   # Yellow
+    ("Left Wrist", "LW", LEFT_WRIST,  (220,  60,  60)),   # Red
+    ("Right Wrist","RW", RIGHT_WRIST, ( 60, 100, 230)),   # Blue
+    ("Left Leg",   "LL", LEFT_KNEE,   ( 50, 200,  70)),   # Green
+    ("Right Leg",  "RL", RIGHT_KNEE,  (230, 200,   0)),   # Yellow
 ]
+
+# Leg limb indices → (knee_kp, ankle_kp) — x is averaged across both
+_LEG_KP_PAIRS = {2: (LEFT_KNEE, LEFT_ANKLE), 3: (RIGHT_KNEE, RIGHT_ANKLE)}
 LIMB_COLORS = [l[3] for l in LIMBS]
 LIMB_SHORTS = [l[1] for l in LIMBS]
 
@@ -144,8 +150,10 @@ LIMB_SHORTS = [l[1] for l in LIMBS]
 MIRROR_X = False
 
 # Gameplay
-NODE_BASE_SPEED  = 4.0    # px / frame at level 1
-NODE_SPEED_INCR  = 0.3    # extra px / frame per level
+NODE_BASE_SPEED      = 4.0    # px / frame at start
+NODE_SPEED_INCR      = 0.3    # extra px / frame per score-level
+TIME_LEVEL_INTERVAL  = 20     # seconds between time-based speed bumps
+TIME_SPEED_INCR      = 0.6    # extra px / frame per time-level
 NODE_W           = 90     # node width in pixels
 NODE_H           = 44     # node height in pixels
 SPAWN_INTERVAL   = 80     # frames between spawns at level 1
@@ -170,12 +178,15 @@ COCO_SKELETON = [
     (5, 6), (5, 11), (6, 12), (11, 12),
     (11, 13), (13, 15), (12, 14), (14, 16),
 ]
-# Keypoint index → limb colour for highlighted joints
-_TRACKED_KP_COLOR = {limb[2]: limb[3] for limb in
-                     [("Left Wrist",  "LW", LEFT_WRIST,   (220,  60,  60)),
-                      ("Right Wrist", "RW", RIGHT_WRIST,  ( 60, 100, 230)),
-                      ("Left Knee",   "LK", LEFT_KNEE,    ( 50, 200,  70)),
-                      ("Right Knee",  "RK", RIGHT_KNEE,   (230, 200,   0))]}
+# Keypoint index → limb colour for highlighted joints (includes ankles for legs)
+_TRACKED_KP_COLOR = {
+    LEFT_WRIST:  (220,  60,  60),
+    RIGHT_WRIST: ( 60, 100, 230),
+    LEFT_KNEE:   ( 50, 200,  70),
+    RIGHT_KNEE:  (230, 200,   0),
+    LEFT_ANKLE:  ( 50, 200,  70),   # same green as left leg
+    RIGHT_ANKLE: (230, 200,   0),   # same yellow as right leg
+}
 
 # Picture-in-picture camera overlay
 PIP_W      = 280
@@ -296,10 +307,20 @@ class DDRCallback(app_callback_class):
             bbox = det.get_bbox()
 
             for li, kp_idx in enumerate(self._KP_INDICES):
-                if kp_idx >= len(pts):
-                    continue
-                pt    = pts[kp_idx]
-                x_abs = pt.x() * bbox.width() + bbox.xmin()
+                if li in _LEG_KP_PAIRS:
+                    # Average knee and ankle x for a more stable leg position
+                    xs = []
+                    for kp in _LEG_KP_PAIRS[li]:
+                        if kp < len(pts):
+                            x = pts[kp].x() * bbox.width() + bbox.xmin()
+                            xs.append(x)
+                    if not xs:
+                        continue
+                    x_abs = sum(xs) / len(xs)
+                else:
+                    if kp_idx >= len(pts):
+                        continue
+                    x_abs = pts[kp_idx].x() * bbox.width() + bbox.xmin()
                 if MIRROR_X:
                     x_abs = 1.0 - x_abs
                 self.user_data.set_limb_x(li, x_abs)
@@ -603,6 +624,7 @@ def main():
     score        = 0
     combo        = 0
     time_left    = float(ROUND_SECONDS)
+    time_level   = 0
     nodes        = []
     popups       = []   # [text, color, cx, y, alpha, vy]
     spawn_tmr    = 0
@@ -611,8 +633,8 @@ def main():
     _pip_surf    = None
 
     def reset():
-        nonlocal score, combo, time_left, nodes, popups, spawn_tmr, level, miss_flash
-        score = combo = spawn_tmr = miss_flash = 0
+        nonlocal score, combo, time_left, time_level, nodes, popups, spawn_tmr, level, miss_flash
+        score = combo = spawn_tmr = miss_flash = time_level = 0
         time_left = float(ROUND_SECONDS)
         level = 1
         nodes.clear()
@@ -692,13 +714,17 @@ def main():
                     save_high_score(high_score)
 
             # Spawn nodes
+            elapsed    = ROUND_SECONDS - time_left
+            time_level = int(elapsed / TIME_LEVEL_INTERVAL)
             spawn_tmr += 1
             interval   = max(SPAWN_MIN, SPAWN_INTERVAL - (level - 1) * 5)
             if spawn_tmr >= interval:
                 spawn_tmr = 0
                 col   = random.randint(0, NUM_COLUMNS - 1)
                 limb  = random.randint(0, len(LIMBS) - 1)
-                speed = NODE_BASE_SPEED + NODE_SPEED_INCR * (level - 1)
+                speed = (NODE_BASE_SPEED
+                         + NODE_SPEED_INCR * (level - 1)
+                         + TIME_SPEED_INCR * time_level)
                 nodes.append(Node(col, limb, speed))
 
             # Update nodes
@@ -826,7 +852,7 @@ def main():
             screen.blit(hud_font.render(f"Score: {score}", True, WHITE), (12, 10))
             screen.blit(hud_font.render(f"Best:  {high_score}", True, GREY), (12, 50))
             screen.blit(hud_font.render(f"Combo ×{combo}", True, (255, 215, 50)), (12, 90))
-            screen.blit(small_font.render(f"Level {level}", True, GREY), (12, 132))
+            screen.blit(small_font.render(f"Score Lv {level}  |  Speed Lv {time_level}", True, GREY), (12, 132))
 
             # Countdown timer
             secs    = int(time_left)
