@@ -159,7 +159,11 @@ POINTS_PERFECT   = 100
 POINTS_GOOD      = 50
 COMBO_BONUS      = 10     # extra points per combo step beyond 1
 
-LIVES_START      = 3
+HEALTH_MAX             = 100.0
+HEALTH_DRAIN_PER_SEC   = 4.0    # passive drain per second while playing
+HEALTH_MISS_PENALTY    = 14.0   # health lost on a miss
+HEALTH_HIT_RESTORE     = 4.0    # health gained on GOOD
+HEALTH_PERFECT_RESTORE = 7.0    # health gained on PERFECT
 
 HIT_LINE_FRAC    = 0.80   # hit line sits at 80 % of screen height
 
@@ -476,6 +480,31 @@ def draw_pip_skeleton(surf, keypoints):
             pygame.draw.circle(surf, (255, 255, 255), (px, py), r, 1)
 
 
+def draw_game_skeleton(surf, keypoints, window_w, window_h):
+    """Draw a semi-transparent full-size skeleton over the game frame."""
+    if not keypoints:
+        return
+    skel = pygame.Surface((window_w, window_h), pygame.SRCALPHA)
+
+    def to_px(idx):
+        x, y = keypoints[idx]
+        return (int(x * window_w), int(y * window_h))
+
+    for a, b in COCO_SKELETON:
+        if a < len(keypoints) and b < len(keypoints):
+            pygame.draw.line(skel, (220, 220, 220, 90), to_px(a), to_px(b), 3)
+
+    for idx, (x_norm, y_norm) in enumerate(keypoints):
+        px, py = int(x_norm * window_w), int(y_norm * window_h)
+        color  = _TRACKED_KP_COLOR.get(idx, (160, 160, 160))
+        r      = 12 if idx in _TRACKED_KP_COLOR else 5
+        pygame.draw.circle(skel, (*color, 200), (px, py), r)
+        if idx in _TRACKED_KP_COLOR:
+            pygame.draw.circle(skel, (255, 255, 255, 220), (px, py), r, 2)
+
+    surf.blit(skel, (0, 0))
+
+
 def draw_limb_guides(surf, raw_x, window_w, window_h, hit_line_y):
     """Draw a semi-transparent vertical guide and hit-line arrow for each detected limb."""
     guide_surf = pygame.Surface((window_w, window_h), pygame.SRCALPHA)
@@ -577,7 +606,7 @@ def main():
     game_state = GS_MENU
     score      = 0
     combo      = 0
-    lives      = LIVES_START
+    health     = HEALTH_MAX
     nodes      = []
     popups     = []   # [text, color, cx, y, alpha, vy]
     spawn_tmr  = 0
@@ -586,10 +615,10 @@ def main():
     _pip_surf  = None
 
     def reset():
-        nonlocal score, combo, lives, nodes, popups, spawn_tmr, level, miss_flash
+        nonlocal score, combo, health, nodes, popups, spawn_tmr, level, miss_flash
         score = combo = spawn_tmr = miss_flash = 0
-        lives = LIVES_START
-        level = 1
+        health = HEALTH_MAX
+        level  = 1
         nodes.clear()
         popups.clear()
 
@@ -658,6 +687,14 @@ def main():
         if game_state == GS_PLAYING:
             level = 1 + score // LEVEL_SCORE_STEP
 
+            # Passive health drain
+            health = max(0.0, health - HEALTH_DRAIN_PER_SEC / FPS)
+            if health <= 0:
+                game_state = GS_GAME_OVER
+                if score > high_score:
+                    high_score = score
+                    save_high_score(high_score)
+
             # Spawn nodes
             spawn_tmr += 1
             interval   = max(SPAWN_MIN, SPAWN_INTERVAL - (level - 1) * 5)
@@ -684,6 +721,7 @@ def main():
                     pts      = POINTS_PERFECT + combo * COMBO_BONUS
                     score   += pts
                     combo   += 1
+                    health   = min(HEALTH_MAX, health + HEALTH_PERFECT_RESTORE)
                     sounds['perfect'].play()
                     add_popup('PERFECT!', (255, 255, 80), nd.col)
 
@@ -692,17 +730,18 @@ def main():
                     pts      = POINTS_GOOD + combo * COMBO_BONUS
                     score   += pts
                     combo   += 1
+                    health   = min(HEALTH_MAX, health + HEALTH_HIT_RESTORE)
                     sounds['good'].play()
                     add_popup('GOOD', (100, 230, 100), nd.col)
 
                 elif nd.center_y > HIT_LINE_Y + GOOD_WINDOW:
-                    nd.state  = 'missed'
-                    combo     = 0
-                    lives    -= 1
+                    nd.state   = 'missed'
+                    combo      = 0
+                    health     = max(0.0, health - HEALTH_MISS_PENALTY)
                     miss_flash = 22
                     sounds['miss'].play()
                     add_popup('MISS', (230, 70, 70), nd.col)
-                    if lives <= 0:
+                    if health <= 0:
                         game_state = GS_GAME_OVER
                         if score > high_score:
                             high_score = score
@@ -784,6 +823,10 @@ def main():
                 pygame.draw.circle(screen, (40, 38, 65), (ring_cx, zone_cy), 18)
                 pygame.draw.circle(screen, (60, 58, 90), (ring_cx, zone_cy), 18, 2)
 
+        # Full skeleton overlay on game frame
+        if HAILO_AVAILABLE and raw_kps:
+            draw_game_skeleton(screen, raw_kps, WINDOW_WIDTH, WINDOW_HEIGHT)
+
         # Score popups
         for text, color, cx, y, alpha, _ in popups:
             s = pop_font.render(text, True, color)
@@ -797,14 +840,31 @@ def main():
             screen.blit(hud_font.render(f"Combo ×{combo}", True, (255, 215, 50)), (12, 90))
             screen.blit(small_font.render(f"Level {level}", True, GREY), (12, 132))
 
-            # Lives (hearts)
-            for i in range(LIVES_START):
-                hx = WINDOW_WIDTH - 35 - i * 38
-                draw_heart(screen, hx, 24, 26, HEART_RED if i < lives else GREY)
+            # Health bar
+            bar_w  = 220
+            bar_h  = 18
+            bar_x  = WINDOW_WIDTH - bar_w - 14
+            bar_y  = 14
+            frac   = health / HEALTH_MAX
+            filled = int(bar_w * frac)
+            # Background
+            pygame.draw.rect(screen, (40, 20, 20), (bar_x, bar_y, bar_w, bar_h), border_radius=5)
+            # Fill colour: green → yellow → red
+            if frac > 0.5:
+                r = int(255 * (1 - frac) * 2)
+                g = 220
+            else:
+                r = 220
+                g = int(220 * frac * 2)
+            if filled > 0:
+                pygame.draw.rect(screen, (r, g, 30), (bar_x, bar_y, filled, bar_h), border_radius=5)
+            pygame.draw.rect(screen, GREY, (bar_x, bar_y, bar_w, bar_h), 2, border_radius=5)
+            hp_lbl = tiny_font.render("HEALTH", True, GREY)
+            screen.blit(hp_lbl, hp_lbl.get_rect(centerx=bar_x + bar_w // 2, centery=bar_y + bar_h + 10))
 
         # Limb colour legend (top-right)
         lx = WINDOW_WIDTH - 180
-        ly = 58
+        ly = 52
         for li, (name, short, _, color) in enumerate(LIMBS):
             pygame.draw.circle(screen, color, (lx, ly + 10), 10)
             pygame.draw.circle(screen, WHITE,  (lx, ly + 10), 10, 1)
