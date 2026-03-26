@@ -174,12 +174,12 @@ POINTS_PERFECT   = 100
 POINTS_GOOD      = 50
 COMBO_BONUS      = 10     # extra points per combo step beyond 1
 
-ROUND_SECONDS  = 60     # length of a round
+ROUND_SECONDS  = 120    # length of a round
 
-# Time-bonus node: spawns occasionally, falls fast, awards +TIME_NODE_ADD seconds on hit
-TIME_NODE_CHANCE  = 0.012   # probability per spawn tick of spawning a time node
-TIME_NODE_SPEED   = 18.0    # px / frame (much faster than normal nodes)
-TIME_NODE_ADD     = 10      # seconds added on hit
+# Time-bonus node: spawns every TIME_NODE_INTERVAL seconds, falls fast, awards +TIME_NODE_ADD s on hit
+TIME_NODE_INTERVAL = 10     # seconds between time-node spawns
+TIME_NODE_SPEED    = 18.0   # px / frame (much faster than normal nodes)
+TIME_NODE_ADD      = 10     # seconds added on hit
 
 HIT_LINE_FRAC    = 0.80   # hit line sits at 80 % of screen height
 
@@ -637,13 +637,15 @@ def main():
     nodes             = []
     popups            = []   # [text, color, cx, y, alpha, vy]
     spawn_tmr         = 0
+    time_node_tmr     = 0.0   # seconds since last time-node spawn
     level             = 1
     miss_flash        = 0    # frames of red screen flash remaining
     _pip_surf         = None
 
     def reset():
-        nonlocal score, combo, time_left, time_level, nodes, popups, spawn_tmr, level, miss_flash
+        nonlocal score, combo, time_left, time_level, time_node_tmr, nodes, popups, spawn_tmr, level, miss_flash
         score = combo = spawn_tmr = miss_flash = time_level = 0
+        time_node_tmr = 0.0
         time_left = float(ROUND_SECONDS)
         level = 1
         nodes.clear()
@@ -731,13 +733,18 @@ def main():
                 spawn_tmr = 0
                 col  = random.randint(0, NUM_COLUMNS - 1)
                 limb = random.randint(0, len(LIMBS) - 1)
-                if random.random() < TIME_NODE_CHANCE:
-                    nodes.append(Node(col, limb, TIME_NODE_SPEED, is_time_node=True))
-                else:
-                    speed = (NODE_BASE_SPEED
-                             + NODE_SPEED_INCR * (level - 1)
-                             + TIME_SPEED_INCR * time_level)
-                    nodes.append(Node(col, limb, speed))
+                speed = (NODE_BASE_SPEED
+                         + NODE_SPEED_INCR * (level - 1)
+                         + TIME_SPEED_INCR * time_level)
+                nodes.append(Node(col, limb, speed))
+
+            # Time-bonus node — one every TIME_NODE_INTERVAL seconds
+            time_node_tmr += dt
+            if time_node_tmr >= TIME_NODE_INTERVAL:
+                time_node_tmr = 0.0
+                nodes.append(Node(random.randint(0, NUM_COLUMNS - 1),
+                                  random.randint(0, len(LIMBS) - 1),
+                                  TIME_NODE_SPEED, is_time_node=True))
 
             # Update nodes
             for nd in nodes:
