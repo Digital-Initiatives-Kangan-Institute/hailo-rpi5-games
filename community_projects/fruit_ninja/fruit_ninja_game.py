@@ -41,11 +41,13 @@ class user_app_callback_class(app_callback_class):
         # Create queues for inter-process communication
         self.hand_positions_queue = mp.Queue(maxsize=10)
         self.fruits_queue = mp.Queue(maxsize=100)
+        self.skeleton_queue = mp.Queue(maxsize=5)
 
         # Start pygame process
         self.pygame_process = mp.Process(
             target=PygameFruitNinja.run_game,
-            args=(self.hand_positions_queue, self.fruits_queue, self.frame_width, self.frame_height)
+            args=(self.hand_positions_queue, self.fruits_queue, self.skeleton_queue,
+                  self.frame_width, self.frame_height)
         )
         self.pygame_process.start()
 
@@ -119,10 +121,33 @@ def app_callback(pad: any, info: any, user_data: 'user_app_callback_class') -> G
                 hand_id = (track_id << 1) + i
                 hand_positions[hand_id] = (x, y)
 
-    # Send hand positions to pygame (non-blocking)
+    # Extract all keypoints for skeleton overlay (all detected persons)
+    all_persons_kps = []
+    for detection in detections:
+        if detection.get_label() != "person":
+            continue
+        landmark_objects = detection.get_objects_typed(hailo.HAILO_LANDMARKS)
+        if not landmark_objects:
+            continue
+        landmarks = landmark_objects[0].get_points()
+        bbox = detection.get_bbox()
+        kps = []
+        for pt in landmarks:
+            x = int((pt.x() * bbox.width() + bbox.xmin()) * user_data.frame_width)
+            y = int((pt.y() * bbox.height() + bbox.ymin()) * user_data.frame_height)
+            kps.append((x, y))
+        if kps:
+            all_persons_kps.append(kps)
+
+    # Send hand positions and skeleton data to pygame (non-blocking)
     try:
         if hand_positions:
             user_data.hand_positions_queue.put_nowait(hand_positions)
+    except queue.Full:
+        pass
+    try:
+        if all_persons_kps:
+            user_data.skeleton_queue.put_nowait(all_persons_kps)
     except queue.Full:
         pass  # Skip if queue is full
 

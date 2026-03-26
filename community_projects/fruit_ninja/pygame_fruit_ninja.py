@@ -48,6 +48,14 @@ class Fruit:
     class_id: int = 0
 
 
+COCO_SKELETON = [
+    (0, 1), (0, 2), (1, 3), (2, 4),
+    (5, 7), (7, 9), (6, 8), (8, 10),
+    (5, 6), (5, 11), (6, 12), (11, 12),
+    (11, 13), (13, 15), (12, 14), (14, 16),
+]
+
+
 class PygameFruitNinja:
     """
     Pygame-based Fruit Ninja game that runs in a separate process.
@@ -89,7 +97,7 @@ class PygameFruitNinja:
     }
 
     def __init__(self, hand_positions_queue: queue.Queue, fruits_queue: queue.Queue,
-                 frame_width: int, frame_height: int):
+                 skeleton_queue: queue.Queue, frame_width: int, frame_height: int):
         """
         Initialize the Fruit Ninja game.
 
@@ -101,6 +109,7 @@ class PygameFruitNinja:
         """
         self.hand_positions_queue = hand_positions_queue
         self.fruits_queue = fruits_queue
+        self.skeleton_queue = skeleton_queue
         self.frame_width = frame_width
         self.frame_height = frame_height
 
@@ -113,6 +122,7 @@ class PygameFruitNinja:
         # Game state
         self.fruits: List[Fruit] = []
         self.hand_positions: Dict[int, Tuple[int, int]] = {}
+        self.persons_keypoints: List[List[Tuple[int, int]]] = []
         self.score = 0
         self.running = True
 
@@ -222,6 +232,31 @@ class PygameFruitNinja:
         except queue.Empty:
             pass  # No new hand positions
 
+    def receive_skeleton_data(self) -> None:
+        """Receive full keypoint data for skeleton overlay."""
+        try:
+            while True:
+                self.persons_keypoints = self.skeleton_queue.get_nowait()
+        except queue.Empty:
+            pass
+
+    def draw_skeleton(self) -> None:
+        """Draw semi-transparent COCO-17 skeleton for each detected person."""
+        if not self.persons_keypoints:
+            return
+        skel_surf = pygame.Surface((self.frame_width, self.frame_height), pygame.SRCALPHA)
+        for kps in self.persons_keypoints:
+            for a, b in COCO_SKELETON:
+                if a < len(kps) and b < len(kps):
+                    pygame.draw.line(skel_surf, (220, 220, 220, 90), kps[a], kps[b], 3)
+            for idx, (px, py) in enumerate(kps):
+                if idx in (9, 10):  # wrists — highlighted to match hand tracking dots
+                    pygame.draw.circle(skel_surf, (0, 255, 255, 200), (px, py), 12)
+                    pygame.draw.circle(skel_surf, (255, 255, 255, 220), (px, py), 12, 2)
+                else:
+                    pygame.draw.circle(skel_surf, (160, 160, 160, 160), (px, py), 5)
+        self.screen.blit(skel_surf, (0, 0))
+
     def draw(self) -> None:
         """Draw the game state."""
         # Clear screen
@@ -251,6 +286,9 @@ class PygameFruitNinja:
             else:
                 pygame.draw.circle(self.screen, color, (int(fruit.x), int(fruit.y)), fruit.size)
 
+        # Skeleton overlay
+        self.draw_skeleton()
+
         # Draw hand positions
         for hand_id, (hand_x, hand_y) in self.hand_positions.items():
             pygame.draw.circle(self.screen, (255, 255, 255), (hand_x, hand_y), 10)
@@ -276,8 +314,9 @@ class PygameFruitNinja:
                     if event.key == pygame.K_ESCAPE:
                         self.running = False
 
-            # Receive hand positions from pose estimation
+            # Receive hand positions and skeleton data from pose estimation
             self.receive_hand_positions()
+            self.receive_skeleton_data()
 
             # Spawn new fruits randomly
             if random.random() < self.FRUIT_SPAWN_RATE:
@@ -301,7 +340,7 @@ class PygameFruitNinja:
 
     @staticmethod
     def run_game(hand_positions_queue: queue.Queue, fruits_queue: queue.Queue,
-                 frame_width: int, frame_height: int) -> None:
+                 skeleton_queue: queue.Queue, frame_width: int, frame_height: int) -> None:
         """
         Run the Fruit Ninja game in a separate process.
 
@@ -315,7 +354,7 @@ class PygameFruitNinja:
             frame_height (int): Height of the video frame
         """
         try:
-            game = PygameFruitNinja(hand_positions_queue, fruits_queue, frame_width, frame_height)
+            game = PygameFruitNinja(hand_positions_queue, fruits_queue, skeleton_queue, frame_width, frame_height)
             game.run()
         except Exception as e:
             print(f"Error in pygame process: {e}")
@@ -332,6 +371,7 @@ if __name__ == "__main__":
 
     hand_queue = mp.Queue()
     fruit_queue = mp.Queue()
+    skel_queue = mp.Queue()
 
-    game = PygameFruitNinja(hand_queue, fruit_queue, 640, 480)
+    game = PygameFruitNinja(hand_queue, fruit_queue, skel_queue, 640, 480)
     game.run()

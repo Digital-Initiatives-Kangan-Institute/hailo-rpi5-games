@@ -139,6 +139,13 @@ RIGHT_WRIST = 10
 MIRROR_X    = False  # GStreamer pipeline already applies videoflip horiz
 
 # Gameplay
+COCO_SKELETON = [
+    (0, 1), (0, 2), (1, 3), (2, 4),
+    (5, 7), (7, 9), (6, 8), (8, 10),
+    (5, 6), (5, 11), (6, 12), (11, 12),
+    (11, 13), (13, 15), (12, 14), (14, 16),
+]
+
 LIVES              = 3
 FRUIT_SPAWN_CHANCE = 0.025   # per frame
 BOMB_SPAWN_CHANCE  = 0.005
@@ -230,9 +237,18 @@ class FruitNinjaUserData(app_callback_class):
         ]
         self._lock    = threading.Lock()
         self._active  = [False] * MAX_PLAYERS
+        self._all_kps = []   # [[( px, py ), …17 kps], …] one list per detected person
         self.pip_queue        = queue.Queue(maxsize=1)   # latest camera frame for PiP
         self.head_bboxes      = [None] * MAX_PLAYERS    # (nx1,ny1,nx2,ny2) normalised
         self.head_crop_queues = [queue.Queue(maxsize=1) for _ in range(MAX_PLAYERS)]
+
+    def set_keypoints(self, kps):
+        with self._lock:
+            self._all_kps = kps
+
+    def get_keypoints(self):
+        with self._lock:
+            return list(self._all_kps)
 
     @property
     def active(self):
@@ -321,6 +337,32 @@ class FruitNinjaCallback(app_callback_class):
         with self.user_data._lock:
             for i in range(count, MAX_PLAYERS):
                 self.user_data.head_bboxes[i] = None
+
+        # Extract all 17 keypoints per person for skeleton overlay
+        all_kps = []
+        for det in detections:
+            if det.get_label() != "person":
+                continue
+            lms = det.get_objects_typed(hailo.HAILO_LANDMARKS)
+            if not lms:
+                continue
+            pts  = lms[0].get_points()
+            bbox = det.get_bbox()
+            kps  = []
+            for pt in pts:
+                xn  = pt.x() * bbox.width()  + bbox.xmin()
+                yn  = pt.y() * bbox.height() + bbox.ymin()
+                if MIRROR_X:
+                    xn = 1.0 - xn
+                kps.append((
+                    int(np.clip(xn * WINDOW_WIDTH,  0, WINDOW_WIDTH  - 1)),
+                    int(np.clip(yn * WINDOW_HEIGHT, 0, WINDOW_HEIGHT - 1)),
+                ))
+            if kps:
+                all_kps.append(kps)
+            if len(all_kps) >= MAX_PLAYERS:
+                break
+        self.user_data.set_keypoints(all_kps)
 
         return Gst.PadProbeReturn.OK
 
@@ -669,6 +711,48 @@ def draw_win_screen(surf, score, high_score, face_surfs, frame, big_font, hud_fo
                              (fx - face_size // 2 - 4, cy - 50, face_size + 8, face_size + 8), 3)
             surf.blit(scaled, (fx - face_size // 2, cy - 46))
     _centered(surf, "Press  R  to  play  again", cx, cy + 130, (80, 210, 255), hud_font)
+
+
+def draw_skeleton_overlay(surf, all_kps):
+    """Draw a semi-transparent COCO-17 skeleton for each detected player."""
+    if not all_kps:
+        return
+    w, h = surf.get_size()
+    skel_surf = pygame.Surface((w, h), pygame.SRCALPHA)
+    for pi, kps in enumerate(all_kps):
+        blade_col = BLADE_COLORS[pi % len(BLADE_COLORS)]
+        for a, b in COCO_SKELETON:
+            if a < len(kps) and b < len(kps):
+                pygame.draw.line(skel_surf, (*blade_col, 80), kps[a], kps[b], 3)
+        for idx, (px, py) in enumerate(kps):
+            if idx in (9, 10):  # wrists — extra highlight
+                pygame.draw.circle(skel_surf, (*blade_col, 210), (px, py), 13)
+                pygame.draw.circle(skel_surf, (255, 255, 255, 220), (px, py), 13, 2)
+            else:
+                pygame.draw.circle(skel_surf, (180, 180, 180, 150), (px, py), 5)
+    surf.blit(skel_surf, (0, 0))
+
+
+def draw_bomb_cooldowns(surf, bomb_timeouts, face_surfs, font):
+    """Show a cooldown bar below each player's face thumbnail when frozen."""
+    bar_w = LEGEND_FACE
+    bar_h = 10
+    for pi in range(MAX_PLAYERS):
+        if bomb_timeouts[pi] <= 0:
+            continue
+        lx = PIP_MARGIN
+        ly = WINDOW_HEIGHT - (MAX_PLAYERS - pi) * (LEGEND_FACE + 30) - PIP_MARGIN
+        # Bar sits below the face thumbnail
+        bar_y = ly + LEGEND_FACE + 18
+        frac  = bomb_timeouts[pi] / BOMB_TIMEOUT_FRAMES
+        filled = int(bar_w * frac)
+        pygame.draw.rect(surf, (60, 20, 20),  (lx, bar_y, bar_w, bar_h), border_radius=4)
+        if filled > 0:
+            pygame.draw.rect(surf, (255, 80, 30), (lx, bar_y, filled, bar_h), border_radius=4)
+        pygame.draw.rect(surf, (200, 100, 50), (lx, bar_y, bar_w, bar_h), 1, border_radius=4)
+        secs_left = math.ceil(bomb_timeouts[pi] / 60)
+        lbl = font.render(f"FROZEN  {secs_left}s", True, (255, 80, 30))
+        surf.blit(lbl, (lx, bar_y - lbl.get_height() - 1))
 
 
 def _text(surf, text, x, y, color, font):
@@ -1043,6 +1127,7 @@ def main():
         # ─────────────────────────────────────────────────────────────────────
         # DRAW
         # ─────────────────────────────────────────────────────────────────────
+        all_kps = user_data.get_keypoints() if HAILO_AVAILABLE else []
         draw_background(game_surf, frame)
 
         if g['state'] == STATE_WAITING:
@@ -1068,6 +1153,7 @@ def main():
                     for wi in range(2):
                         draw_blade(game_surf, trails[pi][wi], bc)
 
+            draw_skeleton_overlay(game_surf, all_kps)
             draw_popups(game_surf, g['popups'], pop_font)
             draw_hud(game_surf, g['score'], high_score,
                      0, g['combo_count'], t_left, hud_font, big_font)
@@ -1092,6 +1178,9 @@ def main():
                 lbl = _player_labels[pi]
                 game_surf.blit(lbl, (lx + LEGEND_FACE // 2 - lbl.get_width() // 2,
                                      ly + LEGEND_FACE + 4))
+
+        # ── Bomb cooldown bars ────────────────────────────────────────────────
+        draw_bomb_cooldowns(game_surf, bomb_timeouts, _face_surfs, hud_font)
 
         # ── Picture-in-picture: pose estimation feed (bottom-right corner) ───
         try:
