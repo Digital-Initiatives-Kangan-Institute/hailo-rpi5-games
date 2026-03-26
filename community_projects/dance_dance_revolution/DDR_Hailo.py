@@ -178,7 +178,7 @@ ROUND_SECONDS  = 120    # length of a round
 
 # Time-bonus node: spawns every TIME_NODE_INTERVAL seconds, falls fast, awards +TIME_NODE_ADD s on hit
 TIME_NODE_INTERVAL = 10     # seconds between time-node spawns
-TIME_NODE_SPEED    = 18.0   # px / frame (much faster than normal nodes)
+TIME_NODE_SPEED    = 14.0   # px / frame (faster than normal nodes)
 TIME_NODE_ADD      = 10     # seconds added on hit
 
 HIT_LINE_FRAC    = 0.80   # hit line sits at 80 % of screen height
@@ -422,11 +422,11 @@ class Node:
     def __init__(self, col, limb_idx, speed, is_time_node=False):
         self.col          = col
         self.limb_idx     = limb_idx
-        self.color        = (80, 255, 200) if is_time_node else LIMB_COLORS[limb_idx]
+        self.color        = LIMB_COLORS[limb_idx]
         self.speed        = speed
         self.y            = float(-NODE_H)
         self.state        = 'falling'   # 'falling' | 'hit' | 'missed'
-        self.label        = f"+{TIME_NODE_ADD}s" if is_time_node else LIMB_SHORTS[limb_idx]
+        self.label        = LIMB_SHORTS[limb_idx]
         self.alpha        = 255
         self.is_time_node = is_time_node
 
@@ -468,12 +468,16 @@ def draw_node(surf, nd, cx, node_font):
     pygame.draw.rect(ns, body_color, (0, 0, NODE_W, NODE_H), border_radius=10)
     hi = tuple(min(255, c + 70) for c in nd.color)
     pygame.draw.rect(ns, (*hi, nd.alpha), (5, 4, NODE_W - 10, 9), border_radius=4)
-    if nd.is_time_node:
-        # Bright white flashing border
-        pygame.draw.rect(ns, (255, 255, 255, nd.alpha), (0, 0, NODE_W, NODE_H), 3, border_radius=10)
-    lbl = node_font.render(nd.label, True, (0, 0, 0) if nd.is_time_node else (255, 255, 255))
+    lbl = node_font.render(nd.label, True, (255, 255, 255))
     lbl.set_alpha(nd.alpha)
-    ns.blit(lbl, lbl.get_rect(center=(NODE_W // 2, NODE_H // 2)))
+    if nd.is_time_node:
+        pygame.draw.rect(ns, (255, 255, 255, nd.alpha), (0, 0, NODE_W, NODE_H), 3, border_radius=10)
+        ns.blit(lbl, lbl.get_rect(center=(NODE_W // 2, NODE_H // 2 - 6)))
+        tag = node_font.render(f"+{TIME_NODE_ADD}s", True, (255, 255, 255))
+        tag.set_alpha(nd.alpha)
+        ns.blit(tag, tag.get_rect(center=(NODE_W // 2, NODE_H // 2 + 8)))
+    else:
+        ns.blit(lbl, lbl.get_rect(center=(NODE_W // 2, NODE_H // 2)))
     surf.blit(ns, (x, int(nd.y)))
 
 
