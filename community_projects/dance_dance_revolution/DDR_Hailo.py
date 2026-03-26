@@ -125,6 +125,8 @@ FPS           = 60
 NUM_COLUMNS   = 4
 
 # COCO-17 keypoint indices
+LEFT_ELBOW  = 7
+RIGHT_ELBOW = 8
 LEFT_WRIST  = 9
 RIGHT_WRIST = 10
 LEFT_KNEE   = 13
@@ -133,16 +135,21 @@ LEFT_ANKLE  = 15
 RIGHT_ANKLE = 16
 
 # Limbs: (display_name, short_name, primary_keypoint_index, rgb_colour)
-# Leg limbs average knee + ankle for a more stable x position.
+# Arms average elbow + wrist; legs average knee + ankle.
 LIMBS = [
-    ("Left Wrist", "LW", LEFT_WRIST,  (220,  60,  60)),   # Red
-    ("Right Wrist","RW", RIGHT_WRIST, ( 60, 100, 230)),   # Blue
-    ("Left Leg",   "LL", LEFT_KNEE,   ( 50, 200,  70)),   # Green
-    ("Right Leg",  "RL", RIGHT_KNEE,  (230, 200,   0)),   # Yellow
+    ("Left Arm",  "LA", LEFT_WRIST,  (220,  60,  60)),   # Red
+    ("Right Arm", "RA", RIGHT_WRIST, ( 60, 100, 230)),   # Blue
+    ("Left Leg",  "LL", LEFT_KNEE,   ( 50, 200,  70)),   # Green
+    ("Right Leg", "RL", RIGHT_KNEE,  (230, 200,   0)),   # Yellow
 ]
 
-# Leg limb indices → (knee_kp, ankle_kp) — x is averaged across both
-_LEG_KP_PAIRS = {2: (LEFT_KNEE, LEFT_ANKLE), 3: (RIGHT_KNEE, RIGHT_ANKLE)}
+# Limb index → (kp_a, kp_b) — x position averaged across both keypoints
+_KP_PAIRS = {
+    0: (LEFT_WRIST,  LEFT_ELBOW),
+    1: (RIGHT_WRIST, RIGHT_ELBOW),
+    2: (LEFT_KNEE,   LEFT_ANKLE),
+    3: (RIGHT_KNEE,  RIGHT_ANKLE),
+}
 LIMB_COLORS = [l[3] for l in LIMBS]
 LIMB_SHORTS = [l[1] for l in LIMBS]
 
@@ -169,6 +176,11 @@ COMBO_BONUS      = 10     # extra points per combo step beyond 1
 
 ROUND_SECONDS  = 60     # length of a round
 
+# Time bonus: score TIME_BONUS_POINTS within TIME_BONUS_WINDOW seconds → +TIME_BONUS_ADD seconds
+TIME_BONUS_POINTS = 300
+TIME_BONUS_WINDOW = 15.0
+TIME_BONUS_ADD    = 8
+
 HIT_LINE_FRAC    = 0.80   # hit line sits at 80 % of screen height
 
 # COCO-17 skeleton connections for PiP overlay
@@ -178,14 +190,16 @@ COCO_SKELETON = [
     (5, 6), (5, 11), (6, 12), (11, 12),
     (11, 13), (13, 15), (12, 14), (14, 16),
 ]
-# Keypoint index → limb colour for highlighted joints (includes ankles for legs)
+# Keypoint index → highlight colour in skeleton overlay
 _TRACKED_KP_COLOR = {
+    LEFT_ELBOW:  (220,  60,  60),   # same red as left arm
+    RIGHT_ELBOW: ( 60, 100, 230),   # same blue as right arm
     LEFT_WRIST:  (220,  60,  60),
     RIGHT_WRIST: ( 60, 100, 230),
     LEFT_KNEE:   ( 50, 200,  70),
     RIGHT_KNEE:  (230, 200,   0),
-    LEFT_ANKLE:  ( 50, 200,  70),   # same green as left leg
-    RIGHT_ANKLE: (230, 200,   0),   # same yellow as right leg
+    LEFT_ANKLE:  ( 50, 200,  70),
+    RIGHT_ANKLE: (230, 200,   0),
 }
 
 # Picture-in-picture camera overlay
@@ -274,8 +288,6 @@ class DDRUserData(app_callback_class):
 class DDRCallback(app_callback_class):
     """GStreamer pad probe callback — extracts wrist and knee positions."""
 
-    _KP_INDICES = [l[2] for l in LIMBS]   # keypoint indices matching LIMBS order
-
     def __init__(self, user_data):
         super().__init__()
         self.user_data = user_data
@@ -306,21 +318,15 @@ class DDRCallback(app_callback_class):
             pts  = lms[0].get_points()
             bbox = det.get_bbox()
 
-            for li, kp_idx in enumerate(self._KP_INDICES):
-                if li in _LEG_KP_PAIRS:
-                    # Average knee and ankle x for a more stable leg position
-                    xs = []
-                    for kp in _LEG_KP_PAIRS[li]:
-                        if kp < len(pts):
-                            x = pts[kp].x() * bbox.width() + bbox.xmin()
-                            xs.append(x)
-                    if not xs:
-                        continue
-                    x_abs = sum(xs) / len(xs)
-                else:
-                    if kp_idx >= len(pts):
-                        continue
-                    x_abs = pts[kp_idx].x() * bbox.width() + bbox.xmin()
+            for li in range(len(LIMBS)):
+                xs = []
+                for kp in _KP_PAIRS[li]:
+                    if kp < len(pts):
+                        x = pts[kp].x() * bbox.width() + bbox.xmin()
+                        xs.append(x)
+                if not xs:
+                    continue
+                x_abs = sum(xs) / len(xs)
                 if MIRROR_X:
                     x_abs = 1.0 - x_abs
                 self.user_data.set_limb_x(li, x_abs)
@@ -620,21 +626,26 @@ def main():
     ]
 
     # ── Game state ───────────────────────────────────────────────────────────
-    game_state   = GS_MENU
-    score        = 0
-    combo        = 0
-    time_left    = float(ROUND_SECONDS)
-    time_level   = 0
-    nodes        = []
-    popups       = []   # [text, color, cx, y, alpha, vy]
-    spawn_tmr    = 0
-    level        = 1
-    miss_flash   = 0    # frames of red screen flash remaining
-    _pip_surf    = None
+    game_state        = GS_MENU
+    score             = 0
+    combo             = 0
+    time_left         = float(ROUND_SECONDS)
+    time_level        = 0
+    bonus_score_at    = 0     # score when current bonus window started
+    bonus_elapsed_at  = 0.0   # elapsed seconds when current bonus window started
+    nodes             = []
+    popups            = []   # [text, color, cx, y, alpha, vy]
+    spawn_tmr         = 0
+    level             = 1
+    miss_flash        = 0    # frames of red screen flash remaining
+    _pip_surf         = None
 
     def reset():
-        nonlocal score, combo, time_left, time_level, nodes, popups, spawn_tmr, level, miss_flash
+        nonlocal score, combo, time_left, time_level, bonus_score_at, bonus_elapsed_at, \
+                 nodes, popups, spawn_tmr, level, miss_flash
         score = combo = spawn_tmr = miss_flash = time_level = 0
+        bonus_score_at = 0
+        bonus_elapsed_at = 0.0
         time_left = float(ROUND_SECONDS)
         level = 1
         nodes.clear()
@@ -651,7 +662,7 @@ def main():
 
     running = True
     while running:
-        clock.tick(FPS)
+        dt = clock.tick(FPS) / 1000.0   # real seconds elapsed this frame
 
         # ── Events ───────────────────────────────────────────────────────────
         for ev in pygame.event.get():
@@ -705,13 +716,24 @@ def main():
         if game_state == GS_PLAYING:
             level = 1 + score // LEVEL_SCORE_STEP
 
-            # Countdown timer
-            time_left = max(0.0, time_left - 1.0 / FPS)
+            # Countdown timer — use real delta time so slow frames don't stretch the clock
+            time_left = max(0.0, time_left - dt)
             if time_left <= 0:
                 game_state = GS_GAME_OVER
                 if score > high_score:
                     high_score = score
                     save_high_score(high_score)
+
+            # Time bonus: score TIME_BONUS_POINTS within TIME_BONUS_WINDOW seconds → +TIME_BONUS_ADD s
+            elapsed          = ROUND_SECONDS - time_left
+            points_in_window = score - bonus_score_at
+            time_in_window   = elapsed - bonus_elapsed_at
+            if points_in_window >= TIME_BONUS_POINTS:
+                if time_in_window <= TIME_BONUS_WINDOW:
+                    time_left += TIME_BONUS_ADD
+                    add_popup(f"+{TIME_BONUS_ADD}s!", (80, 255, 180), random.randint(0, NUM_COLUMNS - 1))
+                bonus_score_at   = score
+                bonus_elapsed_at = elapsed
 
             # Spawn nodes
             elapsed    = ROUND_SECONDS - time_left
