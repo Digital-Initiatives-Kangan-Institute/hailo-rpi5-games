@@ -168,16 +168,37 @@ ENEMY_SPEED  = 1.5
 ENEMY_SPAWN_CHANCE = 0.02
 ENEMY_DRIFT_SPEED  = 1.5
 
-# Enemy types: (speed_mult, points, ring_color, spawn_weight)
+# Enemy types: (speed_mult, ring_color, spawn_weight, behavior)
 ENEMY_TYPES = [
-    (1.0,  10, None,            60),   # normal
-    (2.0,  20, (255,  80,  80), 25),   # fast  — red ring
-    (0.5,  30, ( 80,  80, 255), 15),   # tank  — blue ring
+    (1.0,  None,              50, 'normal'),   # normal
+    (2.0,  (255,  80,  80),   20, 'fast'),     # fast  — red ring
+    (0.5,  ( 80,  80, 255),   15, 'tank'),     # tank  — blue ring
+    (1.5,  (255, 180,   0),    9, 'bouncy'),   # bouncy — gold, bounces off walls
+    (0.8,  (255,   0, 200),    6, 'zigzag'),   # zigzag — pink, sharp side-to-side
 ]
-_ENEMY_TYPE_WEIGHTS = [t[3] for t in ENEMY_TYPES]
+_ENEMY_TYPE_WEIGHTS = [t[2] for t in ENEMY_TYPES]
 
-# --- Round ---
-ROUND_TIME           = 60   # seconds per round
+# --- Powerups ---
+POWERUP_FALL_SPEED   = 2.0
+POWERUP_RADIUS       = 22
+POWERUP_DURATION     = 360   # frames (~6 s at 60 fps)
+POWERUP_SPAWN_CHANCE = 0.35  # chance on every enemy kill
+
+POWERUP_TYPES  = ['RAPID_FIRE', 'WIDE_SHOT', 'FREEZE', 'DISCO', 'NUKE']
+POWERUP_COLORS = {
+    'RAPID_FIRE': (255, 220,   0),
+    'WIDE_SHOT':  (  0, 220, 220),
+    'FREEZE':     (100, 200, 255),
+    'DISCO':      (255,   0, 255),
+    'NUKE':       (255,  60,  30),
+}
+POWERUP_LABELS = {
+    'RAPID_FIRE': 'RAPID!',
+    'WIDE_SHOT':  'WIDE!',
+    'FREEZE':     'FREEZE!',
+    'DISCO':      'DISCO!!',
+    'NUKE':       'NUKE!!',
+}
 
 # --- Banner / Fireworks ---
 FIREWORK_CHANCE      = 0.15
@@ -190,7 +211,6 @@ FIREWORK_DURATION    = 20
 # --- Visuals ---
 SHAKE_FRAMES       = 18
 SHAKE_AMPLITUDE    = 8
-LOW_TIME_THRESHOLD = 10
 GHOST_ALPHA        = 60
 
 # --- Stars (3D background) ---
@@ -426,12 +446,19 @@ def generate_stars_3d():
     return stars
 
 
-def draw_background_3d(surf, stars):
-    surf.fill((5, 5, 18))
+def draw_background_3d(surf, stars, disco_timer=0, frame=0):
+    if disco_timer > 0:
+        hue = (frame * 3) % 360
+        r = int(128 + 80 * math.sin(math.radians(hue)))
+        g = int(128 + 80 * math.sin(math.radians(hue + 120)))
+        b = int(128 + 80 * math.sin(math.radians(hue + 240)))
+        surf.fill((max(0, r - 120), max(0, g - 120), max(0, b - 120)))
+    else:
+        surf.fill((5, 5, 18))
     cx, cy = WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2
     for star in stars:
-        # Move toward viewer
-        star[2] -= STAR_SPEED_Z
+        # Move toward viewer (faster in disco!)
+        star[2] -= STAR_SPEED_Z * (3.0 if disco_timer > 0 else 1.0)
         if star[2] <= 0:
             star[0] = random.uniform(-cx, cx)
             star[1] = random.uniform(-cy, cy)
@@ -442,7 +469,15 @@ def draw_background_3d(surf, stars):
         if 0 <= sx < WINDOW_WIDTH and 0 <= sy < WINDOW_HEIGHT:
             brightness = int(220 * (1 - star[2]))
             size       = max(1, int(3 * (1 - star[2])))
-            color      = (brightness, brightness, min(255, brightness + 40))
+            if disco_timer > 0:
+                hue2 = (frame * 5 + int(star[0]) + int(star[1])) % 360
+                color = (
+                    int(128 + 127 * math.sin(math.radians(hue2))),
+                    int(128 + 127 * math.sin(math.radians(hue2 + 120))),
+                    int(128 + 127 * math.sin(math.radians(hue2 + 240))),
+                )
+            else:
+                color = (brightness, brightness, min(255, brightness + 40))
             if size == 1:
                 surf.set_at((sx, sy), color)
             else:
@@ -571,16 +606,24 @@ def _draw_bullet_trail(surf, bullet, player_color):
                          w_px)
 
 
-def _draw_enemy_overlay(surf, en):
-    """Draw coloured ring around fast/tank enemies."""
-    _, _, ring_color, _ = ENEMY_TYPES[en['type']]
-    if ring_color is None:
-        return
+def _draw_enemy_overlay(surf, en, disco_timer=0, frame=0):
+    """Draw coloured ring around special enemies."""
+    _, ring_color, _, behavior = ENEMY_TYPES[en['type']]
     cx     = int(en['x'] + ENEMY_WIDTH  // 2)
     cy     = int(en['y'] + ENEMY_HEIGHT // 2)
     radius = ENEMY_WIDTH // 2 + 4
     pulse  = int(3 * math.sin(en['y'] * 0.05 + en['phase']))
-    pygame.draw.circle(surf, ring_color, (cx, cy), radius + pulse, 2)
+    if disco_timer > 0:
+        hue = (frame * 7 + int(en['x'])) % 360
+        ring_color = (
+            int(128 + 127 * math.sin(math.radians(hue))),
+            int(128 + 127 * math.sin(math.radians(hue + 120))),
+            int(128 + 127 * math.sin(math.radians(hue + 240))),
+        )
+        for r_off in range(3):
+            pygame.draw.circle(surf, ring_color, (cx, cy), radius + pulse + r_off * 5, 2)
+    elif ring_color is not None:
+        pygame.draw.circle(surf, ring_color, (cx, cy), radius + pulse, 2)
 
 
 def _draw_score_popups(surf, popups, popup_font):
@@ -601,75 +644,77 @@ def _draw_ghost_ship(surf, x, color):
     surf.blit(ghost, (x, WINDOW_HEIGHT - SHIP_HEIGHT))
 
 
-def _draw_hud(surf, scores, high_score, t_left, frame, active_players):
-    """Draw all heads-up display elements."""
-    # Player scores
-    for i, score in enumerate(scores):
-        status = "" if active_players[i] else " (away)"
-        draw_text(surf, f"P{i+1}: {score}{status}", 10, 10 + i * 32, PLAYER_COLORS[i])
-
-    # High score
-    draw_text(surf, f"BEST: {high_score}", 10, 10 + MAX_PLAYERS * 32 + 8, WHITE)
-
-    # Timer — flash red when low
-    if t_left <= LOW_TIME_THRESHOLD and frame % 20 < 10:
-        timer_col = (255, 50, 50)
-    else:
-        timer_col = WHITE
-    draw_text(surf, f"TIME: {t_left:02d}", WINDOW_WIDTH - 160, 10, timer_col)
-
+def _draw_hud(surf, active_players, player_powerups, frame, freeze_timer, disco_timer):
+    """Draw player indicator dots and active powerup badges."""
     # Active player indicator dots
     for i in range(MAX_PLAYERS):
         dot_col = PLAYER_COLORS[i] if active_players[i] else (60, 60, 60)
         pygame.draw.circle(surf, dot_col, (WINDOW_WIDTH - 20, 20 + i * 18), 6)
 
+    # Active powerup badges per player
+    for i in range(MAX_PLAYERS):
+        pups = player_powerups[i]
+        bx = 10
+        by = 10 + i * 40
+        # player label
+        draw_text(surf, f"P{i+1}", bx, by, PLAYER_COLORS[i], 28)
+        bx += 36
+        for ptype, frames_left in list(pups.items()):
+            col   = POWERUP_COLORS[ptype]
+            label = POWERUP_LABELS[ptype]
+            pulse = 0.6 + 0.4 * math.sin(frame * 0.18)
+            col_p = tuple(int(c * pulse) for c in col)
+            draw_text(surf, label, bx, by, col_p, 24)
+            # small timer bar
+            bar_w = max(1, int(50 * frames_left / POWERUP_DURATION))
+            pygame.draw.rect(surf, col_p, (bx, by + 20, bar_w, 4))
+            bx += 70
 
-def _draw_win_screen(surf, scores, winner_idx, face_surfs, high_score, frame,
-                     banner_font, popup_font):
-    """Full-screen win overlay shown after the 60-second round ends."""
-    overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
-    overlay.fill((0, 0, 20, 215))
-    surf.blit(overlay, (0, 0))
-    cx = WINDOW_WIDTH  // 2
-    cy = WINDOW_HEIGHT // 2
+    # Global effect indicators
+    if freeze_timer > 0:
+        fx = WINDOW_WIDTH // 2 - 60
+        pulse = 0.7 + 0.3 * math.sin(frame * 0.3)
+        draw_text(surf, "* FROZEN *", fx, 10, tuple(int(c * pulse) for c in (100, 200, 255)), 32)
+    if disco_timer > 0:
+        hue = (frame * 5) % 360
+        dc = (
+            int(128 + 127 * math.sin(math.radians(hue))),
+            int(128 + 127 * math.sin(math.radians(hue + 120))),
+            int(128 + 127 * math.sin(math.radians(hue + 240))),
+        )
+        draw_text(surf, "** DISCO MODE **", WINDOW_WIDTH // 2 - 100, 40, dc, 36)
 
-    # Title
-    pulse  = 0.5 + 0.5 * math.sin(frame * 0.05)
-    title_col = (int(200 + 55*pulse), int(200 + 55*pulse), int(50 + 100*pulse))
-    title = banner_font.render("TIME'S  UP!", True, title_col)
-    surf.blit(title, (cx - title.get_width() // 2, cy - 240))
 
-    # Winner announcement
-    if all(s == 0 for s in scores):
-        winner_text = "DRAW!"
-    elif len(scores) > 1 and scores[0] == scores[1]:
-        winner_text = "TIE GAME!"
-    else:
-        winner_text = f"P{winner_idx + 1}  WINS!"
-    win_surf = banner_font.render(winner_text, True, PLAYER_COLORS[winner_idx % len(PLAYER_COLORS)])
-    surf.blit(win_surf, (cx - win_surf.get_width() // 2, cy - 160))
+def draw_powerup(surf, pu, frame):
+    """Draw a falling powerup with pulsing glow and label."""
+    col   = POWERUP_COLORS[pu['type']]
+    cx    = int(pu['x'])
+    cy    = int(pu['y'])
+    pulse = 0.6 + 0.4 * math.sin(frame * 0.15 + pu['phase'])
+    radius = int(POWERUP_RADIUS * pulse)
 
-    # Scores
-    for i, sc in enumerate(scores):
-        label = popup_font.render(f"P{i+1}: {sc}", True, PLAYER_COLORS[i % len(PLAYER_COLORS)])
-        surf.blit(label, (cx - label.get_width() // 2, cy - 100 + i * 36))
+    # Outer glow
+    glow = pygame.Surface((radius * 4, radius * 4), pygame.SRCALPHA)
+    pygame.draw.circle(glow, (*col, 60), (radius * 2, radius * 2), radius * 2)
+    surf.blit(glow, (cx - radius * 2, cy - radius * 2))
 
-    # High score
-    hs_surf = popup_font.render(f"BEST: {high_score}", True, WHITE)
-    surf.blit(hs_surf, (cx - hs_surf.get_width() // 2, cy - 100 + len(scores) * 36 + 8))
+    # Main circle
+    pygame.draw.circle(surf, col, (cx, cy), radius)
+    pygame.draw.circle(surf, WHITE, (cx, cy), radius, 2)
 
-    # Winner face snapshot (no tracking lines — raw crop from identity probe)
-    face_size = 150
-    winner_face = face_surfs[winner_idx] if winner_idx < len(face_surfs) else None
-    if winner_face is not None:
-        scaled = pygame.transform.scale(winner_face, (face_size, face_size))
-        col    = PLAYER_COLORS[winner_idx % len(PLAYER_COLORS)]
-        pygame.draw.rect(surf, col,
-                         (cx - face_size // 2 - 4, cy + 20, face_size + 8, face_size + 8), 3)
-        surf.blit(scaled, (cx - face_size // 2, cy + 24))
+    # Spinning inner star
+    for k in range(4):
+        angle = math.radians(frame * 5 + k * 90)
+        sx = int(cx + math.cos(angle) * (radius - 5))
+        sy = int(cy + math.sin(angle) * (radius - 5))
+        pygame.draw.circle(surf, WHITE, (sx, sy), 2)
 
-    prompt = popup_font.render("Press  R  to  play  again", True, CYAN)
-    surf.blit(prompt, (cx - prompt.get_width() // 2, cy + 200))
+    # Label below
+    if size_key := POWERUP_LABELS.get(pu['type']):
+        lbl_col = tuple(min(255, int(c * pulse)) for c in col)
+        if size_key not in _font_cache:
+            pass
+        draw_text(surf, size_key, cx - 24, cy + radius + 4, lbl_col, 20)
 
 
 # =============================================================================
@@ -707,29 +752,17 @@ def main():
         deque([ship_positions[i]] * SMOOTHING_WINDOW, maxlen=SMOOTHING_WINDOW)
         for i in range(MAX_PLAYERS)
     ]
-    bullets        = [[] for _ in range(MAX_PLAYERS)]
-    enemies        = []
-    explosions     = []
-    fireworks      = []
-    score_popups   = []
-    scores         = [0] * MAX_PLAYERS
-    high_score     = load_high_score()
-    shoot_cooldowns= [0] * MAX_PLAYERS
+    bullets         = [[] for _ in range(MAX_PLAYERS)]
+    enemies         = []
+    explosions      = []
+    powerups        = []   # falling powerup items
+    player_powerups = [{} for _ in range(MAX_PLAYERS)]  # {type: frames_remaining}
+    shoot_cooldowns = [0] * MAX_PLAYERS
+    freeze_timer    = 0   # frames remaining for global enemy freeze
+    disco_timer     = 0   # frames remaining for disco mode
 
-    start_time       = time.time()
-    frame            = 0
-    banner_timer     = 0
-    banner_y         = -100
-    shake_timer      = 0
-    last_tick_second = -1
-
-    # Win-screen state
-    GS_PLAYING     = 0
-    GS_WIN_SCREEN  = 1
-    game_state       = GS_PLAYING
-    winner_face_surfs = [None] * MAX_PLAYERS
-    winner_scores    = list(scores)
-    winner_idx       = 0
+    frame       = 0
+    shake_timer = 0
 
     # ------------------------------------------------------------------
     # CAMERA + POSE ESTIMATION STARTUP
@@ -853,6 +886,7 @@ def main():
 
     BGM_RESTART_EVENT = pygame.USEREVENT + 1
     _pip_surf   = None
+    _pip_alpha  = 230.0   # current alpha, smoothly tracks target
     _face_surfs = [None] * MAX_PLAYERS
     _player_labels = [
         popup_font.render(f"P{pi + 1}", True, PLAYER_COLORS[pi % len(PLAYER_COLORS)])
@@ -872,16 +906,14 @@ def main():
             elif ev.type == BGM_RESTART_EVENT:
                 start_bgm()
             elif ev.type == pygame.KEYDOWN and ev.key == pygame.K_r:
-                if game_state == GS_WIN_SCREEN:
-                    game_state       = GS_PLAYING
-                    scores           = [0] * MAX_PLAYERS
-                    enemies.clear()
-                    [bl.clear() for bl in bullets]
-                    score_popups.clear()
-                    explosions.clear()
-                    start_time       = time.time()
-                    last_tick_second = -1
-                    start_bgm()
+                # R = clear the field (fun reset)
+                enemies.clear()
+                powerups.clear()
+                [bl.clear() for bl in bullets]
+                explosions.clear()
+                for pp in player_powerups:
+                    pp.clear()
+                start_bgm()
 
         # ----------------------------------------------------------------
         # KEYBOARD FALLBACK (A/D — P1,  ←/→ — P2)
@@ -897,32 +929,12 @@ def main():
                 position_histories[i].append(min(WINDOW_WIDTH - SHIP_WIDTH, position_histories[i][-1] + 8))
 
         # ----------------------------------------------------------------
-        # TIMING
+        # GLOBAL POWERUP TIMERS
         # ----------------------------------------------------------------
-        elapsed = time.time() - start_time
-        t_left  = max(0, int(ROUND_TIME - elapsed))
-
-        # ----------------------------------------------------------------
-        # ROUND END → WIN SCREEN
-        # ----------------------------------------------------------------
-        if t_left == 0 and game_state == GS_PLAYING:
-            game_state = GS_WIN_SCREEN
-            shake_timer = SHAKE_FRAMES
-            sounds['round_end'].play()
-            pygame.mixer.stop()
-            if max(scores) > high_score:
-                high_score = max(scores)
-                save_high_score(high_score)
-            winner_scores     = list(scores)
-            winner_idx        = scores.index(max(scores)) if any(s > 0 for s in scores) else 0
-            winner_face_surfs = list(_face_surfs)
-
-        # ----------------------------------------------------------------
-        # LOW-TIME TICK  (once per second, only while playing)
-        # ----------------------------------------------------------------
-        if game_state == GS_PLAYING and 0 < t_left <= LOW_TIME_THRESHOLD and t_left != last_tick_second:
-            sounds['tick'].play()
-            last_tick_second = t_left
+        if freeze_timer > 0:
+            freeze_timer -= 1
+        if disco_timer > 0:
+            disco_timer -= 1
 
         # ----------------------------------------------------------------
         # READ POSE POSITIONS  (callback sends normalised 0-1 values)
@@ -944,23 +956,43 @@ def main():
         ]
 
         # ----------------------------------------------------------------
-        # SHOOTING  (only while game is running)
+        # SHOOTING
         # ----------------------------------------------------------------
         # In fallback mode all players are always considered active
         active_players = (
             user_data.active_players if HAILO_AVAILABLE
             else [True] * MAX_PLAYERS
         )
-        for i in range(MAX_PLAYERS) if game_state == GS_PLAYING else []:
+        for i in range(MAX_PLAYERS):
             if active_players[i]:
+                rapid = 'RAPID_FIRE' in player_powerups[i]
+                wide  = 'WIDE_SHOT'  in player_powerups[i]
+                interval = SHOOT_INTERVAL_FRAMES // (3 if rapid else 1)
                 shoot_cooldowns[i] -= 1
                 if shoot_cooldowns[i] <= 0:
-                    lx = ship_positions[i] + SHIP_WIDTH  * 0.2
-                    rx = ship_positions[i] + SHIP_WIDTH  * 0.8
-                    yb = WINDOW_HEIGHT - SHIP_HEIGHT * 0.5
-                    bullets[i].append({'x': lx, 'y': yb, 'trail': [], 'color': PLAYER_COLORS[i]})
-                    bullets[i].append({'x': rx, 'y': yb, 'trail': [], 'color': PLAYER_COLORS[i]})
-                    shoot_cooldowns[i] = SHOOT_INTERVAL_FRAMES
+                    cx  = ship_positions[i] + SHIP_WIDTH  // 2
+                    yb  = WINDOW_HEIGHT - SHIP_HEIGHT * 0.5
+                    if disco_timer > 0:
+                        hue = (frame * 7 + i * 60) % 360
+                        bcol = (
+                            int(128 + 127 * math.sin(math.radians(hue))),
+                            int(128 + 127 * math.sin(math.radians(hue + 120))),
+                            int(128 + 127 * math.sin(math.radians(hue + 240))),
+                        )
+                    else:
+                        bcol = PLAYER_COLORS[i]
+                    if wide:
+                        angles = [-20, -10, 0, 10, 20]
+                    else:
+                        angles = [-8, 8]
+                    for ang in angles:
+                        rad = math.radians(ang)
+                        bullets[i].append({
+                            'x': float(cx), 'y': yb,
+                            'vx': math.sin(rad) * BULLET_SPEED,
+                            'trail': [], 'color': bcol,
+                        })
+                    shoot_cooldowns[i] = interval
                     sounds['shoot'].play()
 
         # ----------------------------------------------------------------
@@ -971,31 +1003,55 @@ def main():
                 b['trail'].append((b['x'], b['y']))
                 if len(b['trail']) > BULLET_TRAIL_LEN:
                     b['trail'].pop(0)
+                b['x'] += b.get('vx', 0)
                 b['y'] -= BULLET_SPEED
-                if b['y'] < 0:
+                if b['y'] < 0 or b['x'] < 0 or b['x'] > WINDOW_WIDTH:
                     blist.remove(b)
 
         # ----------------------------------------------------------------
-        # SPAWN ENEMIES  (only while playing)
+        # SPAWN ENEMIES
         # ----------------------------------------------------------------
         EDGE_MARGIN = max(60, WINDOW_WIDTH // 20)
-        if game_state == GS_PLAYING and random.random() < ENEMY_SPAWN_CHANCE:
+        if random.random() < ENEMY_SPAWN_CHANCE:
             etype = random.choices(range(len(ENEMY_TYPES)), weights=_ENEMY_TYPE_WEIGHTS)[0]
+            _, _, _, behavior = ENEMY_TYPES[etype]
             enemies.append({
                 'x':     float(random.randint(EDGE_MARGIN, WINDOW_WIDTH - ENEMY_WIDTH - EDGE_MARGIN)),
-                'y':     float(-ENEMY_HEIGHT),   # slide in from above the screen
+                'y':     float(-ENEMY_HEIGHT),
                 'type':  etype,
                 'phase': random.uniform(0, math.pi * 2),
+                'dx':    random.choice([-1, 1]) * ENEMY_DRIFT_SPEED * 2.5,  # for bouncy
+                'zigzag_timer': 0,  # for zigzag
+                'hits':  0,         # for tank (2 hits to kill)
             })
 
         # ----------------------------------------------------------------
         # MOVE ENEMIES + COLLISION DETECTION
         # ----------------------------------------------------------------
         for en in enemies[:]:
-            speed_mult, points, _, _ = ENEMY_TYPES[en['type']]
-            en['y'] += ENEMY_SPEED * speed_mult
-            drift    = math.sin(en['y'] * 0.02 + en['phase']) * ENEMY_DRIFT_SPEED
-            en['x']  = float(np.clip(en['x'] + drift, EDGE_MARGIN, WINDOW_WIDTH - ENEMY_WIDTH - EDGE_MARGIN))
+            speed_mult, ring_color, _, behavior = ENEMY_TYPES[en['type']]
+
+            # Frozen enemies don't move
+            if freeze_timer > 0:
+                pass
+            else:
+                base_speed = ENEMY_SPEED * speed_mult
+                en['y'] += base_speed
+
+                if behavior == 'bouncy':
+                    en['x'] += en['dx']
+                    if en['x'] <= EDGE_MARGIN or en['x'] >= WINDOW_WIDTH - ENEMY_WIDTH - EDGE_MARGIN:
+                        en['dx'] *= -1
+                        en['x'] = float(np.clip(en['x'], EDGE_MARGIN, WINDOW_WIDTH - ENEMY_WIDTH - EDGE_MARGIN))
+                elif behavior == 'zigzag':
+                    en['zigzag_timer'] += 1
+                    if en['zigzag_timer'] % 18 == 0:
+                        en['dx'] *= -1
+                    en['x'] += en['dx'] * 2.5
+                    en['x'] = float(np.clip(en['x'], EDGE_MARGIN, WINDOW_WIDTH - ENEMY_WIDTH - EDGE_MARGIN))
+                else:
+                    drift   = math.sin(en['y'] * 0.02 + en['phase']) * ENEMY_DRIFT_SPEED
+                    en['x'] = float(np.clip(en['x'] + drift, EDGE_MARGIN, WINDOW_WIDTH - ENEMY_WIDTH - EDGE_MARGIN))
 
             if en['y'] > WINDOW_HEIGHT:
                 enemies.remove(en)
@@ -1008,34 +1064,82 @@ def main():
                 for b in blist[:]:
                     if math.hypot(b['x'] - ecx, b['y'] - ecy) < ENEMY_WIDTH / 2:
                         blist.remove(b)
+                        # Tank requires 2 hits
+                        if behavior == 'tank' and en['hits'] < 1:
+                            en['hits'] += 1
+                            explosions.append({'x': ecx, 'y': ecy, 't': 8})
+                            hit = True
+                            break
                         enemies.remove(en)
                         explosions.append({'x': ecx, 'y': ecy, 't': 15})
-                        scores[i] += points
-                        score_popups.append({
-                            'x': ecx, 'y': ecy,
-                            'text': f'+{points}',
-                            'color': PLAYER_COLORS[i],
-                            't': 40, 'max_t': 40,
-                        })
-                        sounds[f'explode_{en["type"]}'].play()
+                        sounds[f'explode_{min(en["type"], 2)}'].play()
+                        shake_timer = max(shake_timer, 6)
+                        # Spawn powerup
+                        if random.random() < POWERUP_SPAWN_CHANCE:
+                            ptype = random.choice(POWERUP_TYPES)
+                            powerups.append({
+                                'x': float(ecx),
+                                'y': float(ecy),
+                                'type': ptype,
+                                'phase': random.uniform(0, math.pi * 2),
+                            })
                         hit = True
                         break
                 if hit:
                     break
 
         # ----------------------------------------------------------------
-        # AGE EXPLOSIONS & POPUPS
+        # AGE EXPLOSIONS
         # ----------------------------------------------------------------
         for ex in explosions[:]:
             ex['t'] -= 1
             if ex['t'] <= 0:
                 explosions.remove(ex)
 
-        for p in score_popups[:]:
-            p['y'] -= 1.2
-            p['t'] -= 1
-            if p['t'] <= 0:
-                score_popups.remove(p)
+        # ----------------------------------------------------------------
+        # MOVE POWERUPS + COLLECTION
+        # ----------------------------------------------------------------
+        for pu in powerups[:]:
+            pu['y'] += POWERUP_FALL_SPEED
+            if pu['y'] > WINDOW_HEIGHT:
+                powerups.remove(pu)
+                continue
+            # Check if any player ship touches it
+            for i in range(MAX_PLAYERS):
+                if not active_players[i]:
+                    continue
+                sx = ship_positions[i] + SHIP_WIDTH  // 2
+                sy = WINDOW_HEIGHT - SHIP_HEIGHT // 2
+                if math.hypot(sx - pu['x'], sy - pu['y']) < SHIP_WIDTH * 0.7:
+                    ptype = pu['type']
+                    if ptype == 'NUKE':
+                        # Nuke: clear all enemies with big explosions
+                        for en in list(enemies):
+                            explosions.append({
+                                'x': int(en['x'] + ENEMY_WIDTH  // 2),
+                                'y': int(en['y'] + ENEMY_HEIGHT // 2),
+                                't': 20,
+                            })
+                        enemies.clear()
+                        shake_timer = SHAKE_FRAMES
+                        sounds['round_end'].play()
+                    elif ptype == 'FREEZE':
+                        freeze_timer = POWERUP_DURATION
+                        player_powerups[i][ptype] = POWERUP_DURATION
+                    elif ptype == 'DISCO':
+                        disco_timer = POWERUP_DURATION
+                        player_powerups[i][ptype] = POWERUP_DURATION
+                    else:
+                        player_powerups[i][ptype] = POWERUP_DURATION
+                    powerups.remove(pu)
+                    break
+
+        # Age player powerups
+        for pp in player_powerups:
+            for ptype in list(pp.keys()):
+                pp[ptype] -= 1
+                if pp[ptype] <= 0:
+                    del pp[ptype]
 
         # ----------------------------------------------------------------
         # SCREEN SHAKE COUNTDOWN
@@ -1046,7 +1150,7 @@ def main():
         # ================================================================
         # DRAW
         # ================================================================
-        draw_background_3d(game_surf, stars3d)
+        draw_background_3d(game_surf, stars3d, disco_timer=disco_timer, frame=frame)
 
         # Ghost ships (inactive players)
         for i in range(MAX_PLAYERS):
@@ -1057,17 +1161,33 @@ def main():
         for i in range(MAX_PLAYERS):
             if active_players[i]:
                 sy = WINDOW_HEIGHT - SHIP_HEIGHT
-                draw_ship(game_surf, ship_positions[i], sy, frame, PLAYER_COLORS[i])
-                outer = bullet_outer_colors[i]
-                inner = PLAYER_COLORS[i]
+                # Ship tints based on active powerups
+                if 'RAPID_FIRE' in player_powerups[i]:
+                    ship_col = (255, 220, 0)
+                elif 'WIDE_SHOT' in player_powerups[i]:
+                    ship_col = (0, 220, 220)
+                elif disco_timer > 0:
+                    hue_s = (frame * 4 + i * 120) % 360
+                    ship_col = (
+                        int(128 + 127 * math.sin(math.radians(hue_s))),
+                        int(128 + 127 * math.sin(math.radians(hue_s + 120))),
+                        int(128 + 127 * math.sin(math.radians(hue_s + 240))),
+                    )
+                else:
+                    ship_col = PLAYER_COLORS[i]
+                # WIDE_SHOT wobble
+                wobble_y = int(3 * math.sin(frame * 0.4)) if 'WIDE_SHOT' in player_powerups[i] else 0
+                draw_ship(game_surf, ship_positions[i], sy + wobble_y, frame, ship_col)
                 for b in bullets[i]:
-                    _draw_bullet_trail(game_surf, b, PLAYER_COLORS[i])
+                    bcol  = b.get('color', PLAYER_COLORS[i])
+                    outer = tuple(min(255, c + 80) for c in bcol)
+                    _draw_bullet_trail(game_surf, b, bcol)
                     fh = BULLET_RADIUS * 6
                     bx, by_ = int(b['x']), int(b['y'])
                     br = BULLET_RADIUS
                     pygame.draw.polygon(game_surf, outer,
                                         [(bx, by_), (bx - br, by_ + fh), (bx + br, by_ + fh)])
-                    pygame.draw.polygon(game_surf, inner,
+                    pygame.draw.polygon(game_surf, bcol,
                                         [(bx, by_ + int(fh * 0.4)),
                                          (bx - br // 2, by_ + fh),
                                          (bx + br // 2, by_ + fh)])
@@ -1075,48 +1195,24 @@ def main():
         # Enemies
         for en in enemies:
             draw_enemy(game_surf, en['x'], en['y'])
-            _draw_enemy_overlay(game_surf, en)
+            _draw_enemy_overlay(game_surf, en, disco_timer=disco_timer, frame=frame)
+            # Show crack on damaged tank
+            _, _, _, behavior = ENEMY_TYPES[en['type']]
+            if behavior == 'tank' and en.get('hits', 0) > 0:
+                cx_ = int(en['x'] + ENEMY_WIDTH // 2)
+                cy_ = int(en['y'] + ENEMY_HEIGHT // 2)
+                pygame.draw.line(game_surf, WHITE, (cx_ - 5, cy_ - 8), (cx_ + 3, cy_ + 8), 2)
+
+        # Powerups
+        for pu in powerups:
+            draw_powerup(game_surf, pu, frame)
 
         # Explosions
         for ex in explosions:
             draw_explosion(game_surf, ex['x'], ex['y'], ex['t'])
 
-        # Score popups
-        _draw_score_popups(game_surf, score_popups, popup_font)
-
-        # End-of-round banner
-        if banner_timer > 0:
-            banner_y = min(200, banner_y + BANNER_SPEED)
-            progress = INITIAL_BANNER_TIMER - banner_timer
-            wobble   = math.sin(progress / 10) * BANNER_WOBBLE_AMP
-            text     = "KANGAN DIGITAL INITIATIVE"
-            total_w  = banner_font.size(text)[0]
-            start_x  = WINDOW_WIDTH / 2 - total_w / 2 + wobble
-            for j, ch in enumerate(text):
-                ch_surf = banner_font.render(ch, True, YELLOW)
-                ch_x    = start_x + banner_font.size(text[:j])[0]
-                ch_y    = banner_y + 30 + math.sin((progress + j * 5) / 5) * BANNER_WAVE_AMP
-                game_surf.blit(ch_surf, (ch_x, ch_y))
-            if random.random() < FIREWORK_CHANCE:
-                fireworks.append({
-                    'x': random.uniform(0, WINDOW_WIDTH),
-                    'y': banner_y + random.uniform(10, 90),
-                    't': FIREWORK_DURATION,
-                })
-            for fw in fireworks[:]:
-                draw_explosion(game_surf, fw['x'], fw['y'], fw['t'])
-                fw['t'] -= 1
-                if fw['t'] <= 0:
-                    fireworks.remove(fw)
-            banner_timer -= 1
-
         # HUD
-        _draw_hud(game_surf, scores, high_score, t_left, frame, active_players)
-
-        # Win screen overlay (drawn on top of everything)
-        if game_state == GS_WIN_SCREEN:
-            _draw_win_screen(game_surf, winner_scores, winner_idx, winner_face_surfs,
-                             high_score, frame, banner_font, popup_font)
+        _draw_hud(game_surf, active_players, player_powerups, frame, freeze_timer, disco_timer)
 
         # Apply screen shake
         if shake_timer > 0:
@@ -1157,10 +1253,38 @@ def main():
         except queue.Empty:
             pass
         if _pip_surf is not None:
-            pip_x = WINDOW_WIDTH  - PIP_W - PIP_MARGIN
-            pip_y = WINDOW_HEIGHT - PIP_H - PIP_MARGIN
-            pygame.draw.rect(game_surf, (255, 255, 255),
+            pip_x   = WINDOW_WIDTH  - PIP_W - PIP_MARGIN
+            pip_y   = WINDOW_HEIGHT - PIP_H - PIP_MARGIN
+            pip_rect = pygame.Rect(pip_x, pip_y, PIP_W, PIP_H)
+
+            # Compute whether any ship or enemy overlaps / is near the PiP area
+            FADE_MARGIN = 30   # px around pip_rect that starts the fade
+            fade_rect   = pip_rect.inflate(FADE_MARGIN * 2, FADE_MARGIN * 2)
+            obscured    = False
+            for i in range(MAX_PLAYERS):
+                if active_players[i]:
+                    ship_rect = pygame.Rect(ship_positions[i],
+                                            WINDOW_HEIGHT - SHIP_HEIGHT,
+                                            SHIP_WIDTH, SHIP_HEIGHT)
+                    if fade_rect.colliderect(ship_rect):
+                        obscured = True
+                        break
+            if not obscured:
+                for en in enemies:
+                    en_rect = pygame.Rect(int(en['x']), int(en['y']), ENEMY_WIDTH, ENEMY_HEIGHT)
+                    if fade_rect.colliderect(en_rect):
+                        obscured = True
+                        break
+
+            target_alpha = 40.0 if obscured else 230.0
+            _pip_alpha  += (target_alpha - _pip_alpha) * 0.12   # smooth lerp
+
+            alpha_i = int(_pip_alpha)
+            # Draw border with matching alpha
+            border_col = (int(255 * alpha_i / 255),) * 3
+            pygame.draw.rect(game_surf, border_col,
                              (pip_x - 2, pip_y - 2, PIP_W + 4, PIP_H + 4), 2)
+            _pip_surf.set_alpha(alpha_i)
             game_surf.blit(_pip_surf, (pip_x, pip_y))
 
         screen.fill(BLACK)
@@ -1173,7 +1297,6 @@ def main():
     # ----------------------------------------------------------------
     # CLEANUP
     # ----------------------------------------------------------------
-    save_high_score(high_score)
     pygame.mixer.stop()
     pygame.quit()
 
